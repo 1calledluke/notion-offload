@@ -32,52 +32,7 @@ struct BackupTaskResult {
     let failures: [String]
 }
 
-struct CardThumb: Identifiable, @unchecked Sendable {
-    let id = UUID()
-    let image: NSImage?     // nil -> show placeholder icon
-    let filename: String
-}
 
-final class FileNode: Identifiable {
-    let id = UUID()
-    let url: URL
-    let name: String
-    let isDirectory: Bool
-    let children: [FileNode]   // empty array for files
-    var isChecked: Bool = true // for files only; dirs derive from children
-    var isExpanded: Bool = true
-
-    init(url: URL, name: String, isDirectory: Bool, children: [FileNode] = []) {
-        self.url = url; self.name = name
-        self.isDirectory = isDirectory; self.children = children
-    }
-
-    enum CheckState { case on, off, mixed }
-    var checkState: CheckState {
-        guard isDirectory else { return isChecked ? .on : .off }
-        let leaves = leafFiles()
-        guard !leaves.isEmpty else { return .on }
-        let n = leaves.filter { $0.isChecked }.count
-        if n == leaves.count { return .on }
-        return n == 0 ? .off : .mixed
-    }
-
-    func leafFiles() -> [FileNode] {
-        isDirectory ? children.flatMap { $0.leafFiles() } : [self]
-    }
-
-    func toggle() { setAll(checkState != .on) }
-
-    func setAll(_ val: Bool) {
-        isChecked = val
-        children.forEach { $0.setAll(val) }
-    }
-
-    func selectedURLs() -> [URL] {
-        isDirectory ? children.flatMap { $0.selectedURLs() }
-                    : (isChecked ? [url] : [])
-    }
-}
 
 /// Backing state + actions for the setup window. Runs the Stage-1 ingest.
 @MainActor
@@ -108,12 +63,41 @@ final class SetupModel: ObservableObject {
     @Published var activeBackups: [String: BackupProgressState] = [:]
     @Published var currentCardName: String = ""
     @Published var resumeRun: IncompleteRun? = nil
-    @Published var cardThumbs: [CardThumb] = []
     @Published var cardSummary: String = ""
 
-    @Published var selectiveMode: Bool = false
-    @Published var fileTree: FileNode? = nil
-    @Published var fileTreeRevision: Int = 0
+    // File browser. `dumpFullCard` on (the default) copies everything and the
+    // per-file selection is ignored; switch it off to hand-pick clips.
+    @Published var dumpFullCard: Bool = true
+    @Published var browserFiles: [URL] = []
+    @Published var selectedFiles: Set<URL> = []
+    @Published var isScanningCard: Bool = false
+
+    /// What the run will actually copy: everything, or just the ticked clips.
+    var effectiveSelection: Set<URL> {
+        dumpFullCard ? Set(browserFiles) : selectedFiles
+    }
+
+    func toggleFile(_ url: URL) {
+        if selectedFiles.contains(url) { selectedFiles.remove(url) }
+        else { selectedFiles.insert(url) }
+    }
+    func selectAllFiles() { selectedFiles = Set(browserFiles) }
+    func selectNoFiles() { selectedFiles = [] }
+
+    /// Loads the browser's file list. Everything starts ticked, so switching
+    /// "Dump full card" off leaves the same set selected until you change it.
+    func loadFileBrowser() {
+        let source = sourceURL
+        isScanningCard = true
+        Task.detached {
+            let files = Engine.primaryMediaFiles(in: source)
+            await MainActor.run {
+                self.browserFiles = files
+                self.selectedFiles = Set(files)
+                self.isScanningCard = false
+            }
+        }
+    }
 
     private var config: Config
     private var rawProjects: [Project] = []
@@ -131,6 +115,7 @@ final class SetupModel: ObservableObject {
 
         refreshProjects()
         loadCardPreview()
+        loadFileBrowser()
     }
 
     init(resumeRun: IncompleteRun, appDelegate: AppDelegate?) {
@@ -237,20 +222,20 @@ final class SetupModel: ObservableObject {
         let projectID = selectedProjectID
         let token = config.notionToken
 
-        let isSelective = selectiveMode
-        let selectedPaths: Set<String>? = isSelective
-            ? Set((fileTree?.selectedURLs() ?? []).map { $0.path })
-            : nil
+        let fullCard = dumpFullCard
+        let chosen = selectedFiles
 
         Task.detached {
             var byType = Engine.filesByType(in: source)
-            if let paths = selectedPaths, !paths.isEmpty {
-                byType = byType.mapValues { $0.filter { paths.contains($0.path) } }
-                               .filter { !$0.value.isEmpty }
+            if !fullCard {
+                // Ride-alongs (proxies, XML sidecars) follow their chosen clips.
+                byType = Engine.filterSelection(byType, chosen: chosen)
             }
             if byType.isEmpty {
                 await MainActor.run {
-                    self.errorMessage = "No media files found on the card."
+                    self.errorMessage = fullCard
+                        ? "No media files found on the card."
+                        : "No files selected — tick some clips or turn on “Dump full card”."
                     self.appDelegate?.clearJob(self.jobID)
                     self.isRunning = false
                     self.etaText = ""
@@ -710,10 +695,29 @@ final class SetupModel: ObservableObject {
         }
     }
 
-    func loadCardPreview() {
+    /// Recomputes the summary line a beat after the user stops ticking clips, so
+    /// rapid clicking doesn't kick off a scan per click.
+    private var previewRefreshTask: Task<Void, Never>?
+    func scheduleSelectivePreviewRefresh() {
+        previewRefreshTask?.cancel()
+        previewRefreshTask = Task.detached { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled, let self else { return }
+            let selection = await MainActor.run { self.effectiveSelection }
+            await self.loadCardPreview(restrictTo: selection)
+        }
+    }
+
+    /// Builds the "12 videos, 2 stills • 290GB • Jun 4 – Jun 30" summary.
+    /// `restrictTo` scopes it to the ticked clips; nil means the whole card.
+    /// Thumbnails are NOT produced here — the file browser renders those lazily.
+    func loadCardPreview(restrictTo: Set<URL>? = nil) {
         let source = self.sourceURL
         Task.detached {
-            let byType = Engine.filesByType(in: source)
+            var byType = Engine.filesByType(in: source)
+            if let allowed = restrictTo {
+                byType = Engine.filterSelection(byType, chosen: allowed)
+            }
             
             // Count per type + total bytes
             var typeCounts: [String] = []
@@ -808,146 +812,11 @@ final class SetupModel: ObservableObject {
                 summaryParts.append(dateStr)
             }
             let summaryText = summaryParts.joined(separator: " • ")
-            
-            // Interleave files (videos first, then stills, then audio)
-            func interleave(videos: [URL], stills: [URL], audios: [URL]) -> [URL] {
-                var result: [URL] = []
-                var vIdx = 0
-                var sIdx = 0
-                var aIdx = 0
-                while vIdx < videos.count || sIdx < stills.count || aIdx < audios.count {
-                    if vIdx < videos.count {
-                        result.append(videos[vIdx])
-                        vIdx += 1
-                    }
-                    if sIdx < stills.count {
-                        result.append(stills[sIdx])
-                        sIdx += 1
-                    }
-                    if aIdx < audios.count {
-                        result.append(audios[aIdx])
-                        aIdx += 1
-                    }
-                }
-                return result
-            }
-            
-            let interleaved = interleave(videos: videos, stills: stills, audios: audios)
-            let targetFiles = Array(interleaved.prefix(8))
-            
-            var thumbs: [CardThumb] = []
-            for file in targetFiles {
-                let img = Self.generateThumbnail(for: file, in: source)
-                thumbs.append(CardThumb(image: img, filename: file.lastPathComponent))
-            }
-            let finalThumbs = thumbs
+
             await MainActor.run {
                 self.cardSummary = summaryText
-                self.cardThumbs = finalThumbs
             }
         }
-    }
-
-    func buildFileTree() {
-        let source = sourceURL
-        Task.detached {
-            func node(for url: URL) -> FileNode {
-                var isDir: ObjCBool = false
-                FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-                if isDir.boolValue {
-                    let contents = (try? FileManager.default.contentsOfDirectory(
-                        at: url, includingPropertiesForKeys: [.isDirectoryKey],
-                        options: .skipsHiddenFiles)) ?? []
-                    let sorted = contents.sorted { a, b in
-                        let aD = (try? a.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-                        let bD = (try? b.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-                        if aD != bD { return aD }
-                        return a.lastPathComponent.localizedCaseInsensitiveCompare(b.lastPathComponent) == .orderedAscending
-                    }
-                    return FileNode(url: url, name: url.lastPathComponent, isDirectory: true,
-                                    children: sorted.map { node(for: $0) })
-                } else {
-                    return FileNode(url: url, name: url.lastPathComponent, isDirectory: false)
-                }
-            }
-            let tree = node(for: source)
-            await MainActor.run {
-                self.fileTree = tree
-                self.fileTreeRevision += 1
-            }
-        }
-    }
-
-    nonisolated private static func findProxyFile(basename: String, source: URL) -> URL? {
-        let fm = FileManager.default
-        guard let en = fm.enumerator(
-            at: source,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
-        
-        for case let url as URL in en {
-            if url.lastPathComponent.caseInsensitiveCompare("Proxy") == .orderedSame {
-                if let files = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) {
-                    for file in files {
-                        let fileBase = file.deletingPathExtension().lastPathComponent
-                        let fileExt = file.pathExtension.lowercased()
-                        if fileBase.caseInsensitiveCompare(basename) == .orderedSame && (fileExt == "mp4" || fileExt == "mov") {
-                            return file
-                        }
-                    }
-                }
-            }
-        }
-        return nil
-    }
-
-    nonisolated private static func generateStillThumbnail(for url: URL) -> NSImage? {
-        let opts: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: 320,
-            kCGImageSourceCreateThumbnailWithTransform: true
-        ]
-        if let src = CGImageSourceCreateWithURL(url as CFURL, nil),
-           let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) {
-            return NSImage(cgImage: cg, size: .zero)
-        }
-        return nil
-    }
-
-    nonisolated private static func generateVideoThumbnail(for url: URL) -> NSImage? {
-        let asset = AVURLAsset(url: url)
-        let gen = AVAssetImageGenerator(asset: asset)
-        gen.appliesPreferredTrackTransform = true
-        gen.maximumSize = CGSize(width: 320, height: 320)
-        if let cg = try? gen.copyCGImage(at: CMTime(seconds: 1, preferredTimescale: 600), actualTime: nil) {
-            return NSImage(cgImage: cg, size: .zero)
-        }
-        return nil
-    }
-
-    nonisolated private static func generateThumbnail(for url: URL, in source: URL) -> NSImage? {
-        let ext = url.pathExtension.lowercased()
-        
-        if ext == "braw" {
-            let basename = url.deletingPathExtension().lastPathComponent
-            if let proxyURL = findProxyFile(basename: basename, source: source) {
-                return generateVideoThumbnail(for: proxyURL)
-            }
-            return nil
-        }
-        
-        let videoExts = ["mp4", "mov", "m4v", "mts", "m2ts", "avi", "mxf"]
-        if videoExts.contains(ext) {
-            return generateVideoThumbnail(for: url)
-        }
-        
-        let stillExts = ["jpg", "jpeg", "png", "tif", "tiff", "arw", "dng", "raw", "heic", "cr2", "nef"]
-        if stillExts.contains(ext) {
-            return generateStillThumbnail(for: url)
-        }
-        
-        return nil
     }
 
     nonisolated private static func dumpDateString() -> String {
@@ -989,7 +858,7 @@ struct SetupView: View {
             .animation(.easeInOut(duration: 0.2), value: model.isRunning)
             .animation(.easeInOut(duration: 0.2), value: model.finishedMessage != nil)
         }
-        .frame(width: 540, height: 600)
+        .frame(minWidth: 540, idealWidth: 680, minHeight: 600, idealHeight: 860)
     }
 
     private var resumeReadyView: some View {
@@ -1100,64 +969,77 @@ struct SetupView: View {
         }
     }
 
-    private var formView: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Section: Card Preview
-            VStack(alignment: .leading, spacing: 8) {
-                Text("CARD PREVIEW")
+    /// The card's files as a thumbnail grid. Cells render lazily — only what you
+    /// scroll to gets decoded — so a 200-clip BRAW card opens instantly.
+    private var fileBrowserSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("CARD")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                
-                if model.cardThumbs.isEmpty && model.cardSummary.isEmpty {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Reading card…")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if !model.cardSummary.isEmpty {
-                            Text(model.cardSummary)
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        }
-                        
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 12) {
-                                ForEach(model.cardThumbs) { thumb in
-                                    VStack(alignment: .center, spacing: 4) {
-                                        if let img = thumb.image {
-                                            Image(nsImage: img)
-                                                .resizable()
-                                                .aspectRatio(contentMode: .fill)
-                                                .frame(width: 96, height: 72)
-                                                .clipped()
-                                                .cornerRadius(6)
-                                        } else {
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .fill(.quaternary)
-                                                .frame(width: 96, height: 72)
-                                                .overlay(
-                                                    Image(systemName: placeholderSymbol(for: thumb.filename))
-                                                        .font(.title2)
-                                                        .foregroundColor(.secondary)
-                                                )
-                                        }
-                                        
-                                        Text(thumb.filename)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                            .frame(maxWidth: 96)
-                                    }
-                                }
-                            }
-                        }
-                    }
+
+                if !model.cardSummary.isEmpty {
+                    Text(model.cardSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if !model.dumpFullCard && !model.browserFiles.isEmpty {
+                    Text("\(model.selectedFiles.count) of \(model.browserFiles.count) selected")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("All") { model.selectAllFiles(); model.scheduleSelectivePreviewRefresh() }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                    Button("None") { model.selectNoFiles(); model.scheduleSelectivePreviewRefresh() }
+                        .buttonStyle(.link)
+                        .font(.caption)
                 }
             }
+
+            if model.isScanningCard {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading card…").font(.callout).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 120)
+            } else if model.browserFiles.isEmpty {
+                Text("No media files found on this card.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 108), spacing: 10)],
+                              spacing: 10) {
+                        ForEach(model.browserFiles, id: \.self) { url in
+                            FileCell(
+                                url: url,
+                                source: model.sourceURL,
+                                isSelected: model.dumpFullCard || model.selectedFiles.contains(url),
+                                // In full-card mode the ticks are informational only.
+                                isPickable: !model.dumpFullCard,
+                                onTap: {
+                                    model.toggleFile(url)
+                                    model.scheduleSelectivePreviewRefresh()
+                                }
+                            )
+                        }
+                    }
+                    .padding(8)
+                }
+                .frame(height: 300)
+                .background(.background)
+                .border(.separator)
+            }
+        }
+    }
+
+    private var formView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            fileBrowserSection
 
             // Section: Project
             VStack(alignment: .leading, spacing: 8) {
@@ -1219,44 +1101,12 @@ struct SetupView: View {
                 }
             }
 
-            // Section: Selective Copy
-            VStack(alignment: .leading, spacing: 6) {
-                Toggle("Let me decide what to copy", isOn: $model.selectiveMode)
-                    .font(.callout)
-                    .onChange(of: model.selectiveMode) { _, enabled in
-                        if enabled && model.fileTree == nil {
-                            model.buildFileTree()
-                        }
-                    }
-
-                if model.selectiveMode {
-                    Group {
-                        if let tree = model.fileTree {
-                            ScrollView {
-                                LazyVStack(alignment: .leading, spacing: 0) {
-                                    ForEach(tree.children) { child in
-                                        FileTreeNodeView(node: child, onToggle: { model.fileTreeRevision += 1 })
-                                    }
-                                }
-                                .padding(6)
-                            }
-                            .id(model.fileTreeRevision)
-                            .frame(height: 200)
-                            .background(.background)
-                            .border(.separator)
-                        } else {
-                            HStack(spacing: 6) {
-                                ProgressView().controlSize(.small)
-                                Text("Scanning card…").font(.callout).foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 60)
-                        }
-                    }
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                    .animation(.easeInOut(duration: 0.2), value: model.fileTree != nil)
+            Toggle("Dump full card", isOn: $model.dumpFullCard)
+                .font(.callout)
+                .onChange(of: model.dumpFullCard) { _, _ in
+                    model.scheduleSelectivePreviewRefresh()
                 }
-            }
-            
+
             Spacer()
             
             // Bottom Bar
@@ -1473,19 +1323,6 @@ struct SetupView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func placeholderSymbol(for filename: String) -> String {
-        let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
-        let videoExts = ["mp4", "mov", "mxf", "avi", "m4v", "braw", "mts", "m2ts"]
-        let audioExts = ["wav", "aif", "aiff", "mp3", "flac", "m4a"]
-        if videoExts.contains(ext) {
-            return "video"
-        } else if audioExts.contains(ext) {
-            return "waveform"
-        } else {
-            return "photo"
-        }
-    }
-
     private func folderRow(_ label: Text, text: Binding<String>,
                            key: ReferenceWritableKeyPath<SetupModel, String>) -> some View {
         HStack(alignment: .center) {
@@ -1505,83 +1342,79 @@ struct SetupView: View {
         }
     }
 
-    struct FileTreeNodeView: View {
-        let node: FileNode
-        let onToggle: () -> Void
-        @State private var isExpanded: Bool
+    /// One clip in the browser grid: a lazily-loaded thumbnail with the filename
+    /// and a selection tick. Tapping toggles selection (only when pickable).
+    struct FileCell: View {
+        let url: URL
+        let source: URL
+        let isSelected: Bool
+        let isPickable: Bool
+        let onTap: () -> Void
 
-        init(node: FileNode, onToggle: @escaping () -> Void) {
-            self.node = node
-            self.onToggle = onToggle
-            self._isExpanded = State(initialValue: node.isExpanded)
-        }
+        @State private var image: NSImage?
+        @State private var didLoad = false
 
         var body: some View {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 4) {
-                    if node.isDirectory && !node.children.isEmpty {
-                        Button {
-                            isExpanded.toggle()
-                            node.isExpanded = isExpanded
-                        } label: {
-                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                                .font(.caption2)
-                                .frame(width: 10)
+            VStack(spacing: 4) {
+                ZStack(alignment: .topTrailing) {
+                    Group {
+                        if let img = image {
+                            Image(nsImage: img)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                        } else {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(.quaternary)
+                                .overlay(
+                                    Group {
+                                        if didLoad {
+                                            Image(systemName: placeholder)
+                                                .font(.title2)
+                                                .foregroundStyle(.secondary)
+                                        } else {
+                                            ProgressView().controlSize(.small)
+                                        }
+                                    }
+                                )
                         }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                    } else {
-                        Spacer().frame(width: 10)
                     }
+                    .frame(width: 100, height: 75)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+                    )
+                    .opacity(isPickable && !isSelected ? 0.4 : 1.0)
 
-                    Button {
-                        node.toggle()
-                        onToggle()
-                    } label: {
-                        Image(systemName: checkboxSymbol)
-                            .foregroundStyle(checkboxColor)
-                            .font(.system(size: 13))
-                    }
-                    .buttonStyle(.plain)
-
-                    Image(systemName: iconName)
-                        .font(.caption)
-                        .foregroundStyle(node.isDirectory ? Color.accentColor : .secondary)
-
-                    Text(node.name)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .foregroundStyle(node.checkState == .off ? Color.secondary : Color.primary)
-
-                    Spacer()
-                }
-                .padding(.vertical, 2)
-                .contentShape(Rectangle())
-
-                if node.isDirectory && isExpanded && !node.children.isEmpty {
-                    ForEach(node.children) { child in
-                        FileTreeNodeView(node: child, onToggle: onToggle)
-                            .padding(.leading, 16)
+                    if isPickable {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .font(.body)
+                            .foregroundStyle(isSelected ? Color.accentColor : Color.white.opacity(0.8))
+                            .background(Circle().fill(.black.opacity(0.35)))
+                            .padding(4)
                     }
                 }
+
+                Text(url.lastPathComponent)
+                    .font(.caption2)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 100)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { if isPickable { onTap() } }
+            .task(id: url) {
+                image = await ThumbnailCache.shared.thumbnail(for: url, source: source)
+                didLoad = true
             }
         }
 
-        var checkboxSymbol: String {
-            switch node.checkState {
-            case .on:    return "checkmark.square.fill"
-            case .off:   return "square"
-            case .mixed: return "minus.square.fill"
-            }
-        }
-        var checkboxColor: Color { node.checkState == .off ? .secondary : .accentColor }
-        var iconName: String {
-            if node.isDirectory { return "folder.fill" }
-            let ext = node.url.pathExtension.lowercased()
-            if Engine.videoExts.contains(ext) { return "film" }
-            if Engine.stillsExts.contains(ext) { return "photo" }
+        var placeholder: String {
+            let ext = url.pathExtension.lowercased()
+            if Engine.videoExts.contains(ext) || ext == "braw" { return "film" }
             if Engine.audioExts.contains(ext) { return "waveform" }
-            return "doc"
+            return "photo"
         }
     }
 }

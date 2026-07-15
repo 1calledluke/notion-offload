@@ -26,7 +26,8 @@ final class SetupWindowController: NSObject, NSWindowDelegate {
 
         let window = NSWindow(contentViewController: hosting)
         window.title = "DIT Media Ingest"
-        window.styleMask = [.titled, .closable]
+        window.styleMask = [.titled, .closable, .resizable]
+        window.setFrame(NSRect(x: 0, y: 0, width: 680, height: 860), display: false)
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self

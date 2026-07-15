@@ -361,6 +361,50 @@ enum Engine {
                           totalBytes: totalBytes, failures: failures)
     }
 
+    // MARK: - Selective copy
+
+    /// The files the user actually chooses between in the browser: real media
+    /// only. Proxy copies and XML sidecars are deliberately absent — they aren't
+    /// independent choices, they ride along with the clip they belong to.
+    static func primaryMediaFiles(in source: URL) -> [URL] {
+        let byType = filesByType(in: source)
+        var out: [URL] = []
+        for key in ["video", "stills", "audio"] {
+            let files = (byType[key] ?? []).filter {
+                $0.pathExtension.lowercased() != "xml"
+                    && !$0.path.lowercased().contains("/proxy/")
+            }
+            out.append(contentsOf: files.sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            })
+        }
+        return out
+    }
+
+    /// Narrows `byType` to the chosen clips plus their ride-alongs: the proxy
+    /// copy and the XML sidecar belonging to each chosen clip travel with it, so
+    /// picking C0002.braw also brings Proxy/C0002.mp4 and C0002M01.XML.
+    static func filterSelection(_ byType: [String: [URL]], chosen: Set<URL>) -> [String: [URL]] {
+        guard !chosen.isEmpty else { return [:] }
+        let bases = Set(chosen.map { $0.deletingPathExtension().lastPathComponent.lowercased() })
+
+        func belongs(_ f: URL) -> Bool {
+            if chosen.contains(f) { return true }
+            let b = f.deletingPathExtension().lastPathComponent.lowercased()
+            if bases.contains(b) { return true }   // proxy copy / exact-name sidecar
+            // Sony-style suffixes: C0001M01.XML and C0001T01.JPG belong to C0001.
+            for base in bases where b.hasPrefix(base) && b.count > base.count {
+                let suffix = b.dropFirst(base.count)
+                guard let first = suffix.first, first == "m" || first == "t" else { continue }
+                let digits = suffix.dropFirst()
+                if !digits.isEmpty && digits.allSatisfy({ $0.isNumber }) { return true }
+            }
+            return false
+        }
+
+        return byType.mapValues { $0.filter(belongs) }.filter { !$0.value.isEmpty }
+    }
+
     // MARK: - BRAW Finder icons
 
     /// Stamps each .braw file's first frame onto the file as its Finder icon,
