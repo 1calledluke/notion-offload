@@ -72,6 +72,14 @@ final class SetupModel: ObservableObject {
     @Published var selectedFiles: Set<URL> = []
     @Published var isScanningCard: Bool = false
 
+    // Browser appearance (persisted so it stays how the user likes it).
+    @Published var thumbSize: Double = UserDefaults.standard.object(forKey: "browserThumbSize") as? Double ?? 100 {
+        didSet { UserDefaults.standard.set(thumbSize, forKey: "browserThumbSize") }
+    }
+    @Published var browserListView: Bool = UserDefaults.standard.bool(forKey: "browserListView") {
+        didSet { UserDefaults.standard.set(browserListView, forKey: "browserListView") }
+    }
+
     /// What the run will actually copy: everything, or just the ticked clips.
     var effectiveSelection: Set<URL> {
         dumpFullCard ? Set(browserFiles) : selectedFiles
@@ -858,7 +866,8 @@ struct SetupView: View {
             .animation(.easeInOut(duration: 0.2), value: model.isRunning)
             .animation(.easeInOut(duration: 0.2), value: model.finishedMessage != nil)
         }
-        .frame(minWidth: 540, idealWidth: 680, minHeight: 600, idealHeight: 860)
+        .frame(minWidth: 540, idealWidth: 680, maxWidth: .infinity,
+               minHeight: 600, idealHeight: 860, maxHeight: .infinity)
     }
 
     private var resumeReadyView: some View {
@@ -973,7 +982,7 @@ struct SetupView: View {
     /// scroll to gets decoded — so a 200-clip BRAW card opens instantly.
     private var fileBrowserSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
                 Text("CARD")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -996,7 +1005,24 @@ struct SetupView: View {
                     Button("None") { model.selectNoFiles(); model.scheduleSelectivePreviewRefresh() }
                         .buttonStyle(.link)
                         .font(.caption)
+                    Divider().frame(height: 14)
                 }
+
+                // Thumbnail size (grid only), then grid/list toggle.
+                if !model.browserListView {
+                    Image(systemName: "photo").font(.caption2).foregroundStyle(.secondary)
+                    Slider(value: $model.thumbSize, in: 70...220)
+                        .frame(width: 90)
+                        .controlSize(.mini)
+                        .help("Thumbnail size")
+                }
+                Picker("", selection: $model.browserListView) {
+                    Image(systemName: "square.grid.2x2").tag(false)
+                    Image(systemName: "list.bullet").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 76)
+                .labelsHidden()
             }
 
             if model.isScanningCard {
@@ -1012,29 +1038,43 @@ struct SetupView: View {
                     .frame(maxWidth: .infinity, minHeight: 120)
             } else {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 108), spacing: 10)],
-                              spacing: 10) {
-                        ForEach(model.browserFiles, id: \.self) { url in
-                            FileCell(
-                                url: url,
-                                source: model.sourceURL,
-                                isSelected: model.dumpFullCard || model.selectedFiles.contains(url),
-                                // In full-card mode the ticks are informational only.
-                                isPickable: !model.dumpFullCard,
-                                onTap: {
-                                    model.toggleFile(url)
-                                    model.scheduleSelectivePreviewRefresh()
-                                }
-                            )
+                    if model.browserListView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(model.browserFiles, id: \.self) { url in
+                                FileRow(url: url, source: model.sourceURL,
+                                        isSelected: model.dumpFullCard || model.selectedFiles.contains(url),
+                                        isPickable: !model.dumpFullCard,
+                                        onTap: { model.toggleFile(url); model.scheduleSelectivePreviewRefresh() })
+                            }
                         }
+                        .padding(6)
+                    } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: model.thumbSize + 12), spacing: 10)],
+                                  spacing: 10) {
+                            ForEach(model.browserFiles, id: \.self) { url in
+                                FileCell(
+                                    url: url,
+                                    source: model.sourceURL,
+                                    size: model.thumbSize,
+                                    isSelected: model.dumpFullCard || model.selectedFiles.contains(url),
+                                    // In full-card mode the ticks are informational only.
+                                    isPickable: !model.dumpFullCard,
+                                    onTap: {
+                                        model.toggleFile(url)
+                                        model.scheduleSelectivePreviewRefresh()
+                                    }
+                                )
+                            }
+                        }
+                        .padding(8)
                     }
-                    .padding(8)
                 }
-                .frame(height: 300)
+                .frame(minHeight: 200, maxHeight: .infinity)
                 .background(.background)
                 .border(.separator)
             }
         }
+        .frame(maxHeight: .infinity)
     }
 
     private var formView: some View {
@@ -1106,8 +1146,6 @@ struct SetupView: View {
                 .onChange(of: model.dumpFullCard) { _, _ in
                     model.scheduleSelectivePreviewRefresh()
                 }
-
-            Spacer()
             
             // Bottom Bar
             VStack(spacing: 12) {
@@ -1342,11 +1380,12 @@ struct SetupView: View {
         }
     }
 
-    /// One clip in the browser grid: a lazily-loaded thumbnail with the filename
-    /// and a selection tick. Tapping toggles selection (only when pickable).
+    /// One clip in the browser grid: a lazily-loaded thumbnail (sized by the
+    /// slider) with the filename and a selection tick. Tap toggles selection.
     struct FileCell: View {
         let url: URL
         let source: URL
+        let size: Double
         let isSelected: Bool
         let isPickable: Bool
         let onTap: () -> Void
@@ -1368,7 +1407,7 @@ struct SetupView: View {
                                 .overlay(
                                     Group {
                                         if didLoad {
-                                            Image(systemName: placeholder)
+                                            Image(systemName: FileIcon.symbol(for: url))
                                                 .font(.title2)
                                                 .foregroundStyle(.secondary)
                                         } else {
@@ -1378,7 +1417,7 @@ struct SetupView: View {
                                 )
                         }
                     }
-                    .frame(width: 100, height: 75)
+                    .frame(width: size, height: size * 0.75)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
@@ -1400,7 +1439,7 @@ struct SetupView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .foregroundStyle(.secondary)
-                    .frame(width: 100)
+                    .frame(width: size)
             }
             .contentShape(Rectangle())
             .onTapGesture { if isPickable { onTap() } }
@@ -1409,12 +1448,62 @@ struct SetupView: View {
                 didLoad = true
             }
         }
+    }
 
-        var placeholder: String {
-            let ext = url.pathExtension.lowercased()
-            if Engine.videoExts.contains(ext) || ext == "braw" { return "film" }
-            if Engine.audioExts.contains(ext) { return "waveform" }
-            return "photo"
+    /// One clip as a compact list row: small thumbnail + full filename.
+    struct FileRow: View {
+        let url: URL
+        let source: URL
+        let isSelected: Bool
+        let isPickable: Bool
+        let onTap: () -> Void
+
+        @State private var image: NSImage?
+        @State private var didLoad = false
+
+        var body: some View {
+            HStack(spacing: 8) {
+                if isPickable {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                }
+                Group {
+                    if let img = image {
+                        Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        RoundedRectangle(cornerRadius: 3).fill(.quaternary)
+                            .overlay(Image(systemName: FileIcon.symbol(for: url))
+                                .font(.caption2).foregroundStyle(.secondary))
+                    }
+                }
+                .frame(width: 44, height: 33)
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+
+                Text(url.lastPathComponent)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer()
+            }
+            .padding(.vertical, 3)
+            .padding(.horizontal, 4)
+            .opacity(isPickable && !isSelected ? 0.45 : 1.0)
+            .contentShape(Rectangle())
+            .onTapGesture { if isPickable { onTap() } }
+            .task(id: url) {
+                image = await ThumbnailCache.shared.thumbnail(for: url, source: source)
+                didLoad = true
+            }
         }
+    }
+}
+
+enum FileIcon {
+    static func symbol(for url: URL) -> String {
+        let ext = url.pathExtension.lowercased()
+        if Engine.videoExts.contains(ext) || ext == "braw" { return "film" }
+        if Engine.audioExts.contains(ext) { return "waveform" }
+        return "photo"
     }
 }
