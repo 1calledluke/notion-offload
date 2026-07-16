@@ -121,6 +121,74 @@ enum Engine {
         "TASCAM DR-40":                      "Tascam DR-40",
         "TASCAM DR-60D":                     "Tascam DR-60D",
     ]
+    /// Real capture date per file, read from embedded metadata via one exiftool pass.
+    /// Keyed by absolute source path. Files with no embedded date are absent from the map.
+    static func readCaptureDates(for files: [URL]) -> [String: Date] {
+        guard !files.isEmpty, let exiftool = exiftoolPath() else { return [:] }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: exiftool)
+        proc.arguments = ["-json", "-api", "QuickTimeUTC",
+                          "-DateTimeOriginal", "-CreateDate", "-MediaCreateDate",
+                          "-SourceFile"] + files.map { $0.path }
+        let pipe = Pipe(); proc.standardOutput = pipe; proc.standardError = Pipe()
+        do { try proc.run() } catch { return [:] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        guard let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [:] }
+
+        var out: [String: Date] = [:]
+        for entry in entries {
+            guard let src = entry["SourceFile"] as? String else { continue }
+            for key in ["DateTimeOriginal", "CreateDate", "MediaCreateDate"] {
+                if let raw = entry[key] as? String, let d = parseExifDate(raw) {
+                    out[src] = d          // first (highest-priority) hit wins
+                    break
+                }
+            }
+        }
+        return out
+    }
+
+    /// exiftool emits "YYYY:MM:DD HH:MM:SS" (optionally with fractional secs / TZ). Parse leniently.
+    static func parseExifDate(_ s: String) -> Date? {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty || trimmed.hasPrefix("0000") { return nil }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        for fmt in ["yyyy:MM:dd HH:mm:ssZZZZZ", "yyyy:MM:dd HH:mm:ss", "yyyy:MM:dd"] {
+            f.dateFormat = fmt
+            // strip a trailing ".sss" fractional-seconds block if present
+            let candidate = trimmed.replacingOccurrences(
+                of: #"\.\d+"#, with: "", options: .regularExpression)
+            if let d = f.date(from: candidate) { return d }
+        }
+        return nil
+    }
+
+    static func isPlausibleDate(_ d: Date) -> Bool {
+        let cutoff = Calendar.current.date(from: DateComponents(year: 2005))!
+        let ceiling = Date().addingTimeInterval(2 * 86_400)
+        return d >= cutoff && d <= ceiling
+    }
+
+    struct ClockAssessment {
+        let suspect: Bool          // clock looks wrong → prompt user
+        let bestGuess: Date        // prefill for the date picker
+        let observedMax: Date?     // what the card thinks the newest date is
+    }
+
+    /// Only flags a genuinely wrong *embedded* clock (the Blackmagic case). FAT-epoch cards
+    /// have good embedded dates and are fixed silently — they do NOT flag here.
+    static func assessClock(for files: [URL]) -> ClockAssessment {
+        let dates = Array(readCaptureDates(for: files).values)
+        guard let maxD = dates.max() else {
+            return ClockAssessment(suspect: false, bestGuess: Date(), observedMax: nil)
+        }
+        let suspect = !isPlausibleDate(maxD)      // newest embedded date is impossible
+        return ClockAssessment(suspect: suspect, bestGuess: Date(), observedMax: maxD)
+    }
 
     /// Reads camera model with exiftool. Returns a friendly name, or nil if
     /// nothing usable was found (caller then asks the user).
@@ -254,6 +322,8 @@ enum Engine {
     /// unexpected collision we'd rather surface than silently overwrite.
     static func copyAndVerify(source: URL, files: [URL], destFolder: URL,
                                healMismatched: Bool = false,
+                               captureDates: [String: Date]? = nil,   // NEW: src path → embedded date
+                               dateOverride: Date? = nil,             // NEW: user-corrected card date
                                progress: ((Int, Int, String, Int64, Int64) -> Void)? = nil) -> CopyResult {
         let fm = FileManager.default
         try? fm.createDirectory(at: destFolder, withIntermediateDirectories: true)
@@ -308,6 +378,8 @@ enum Engine {
             if fm.fileExists(atPath: dstFile.path) {
                 // File already exists — verify MD5 matches (resume-safe).
                 if md5(of: srcFile) == md5(of: dstFile) {
+                    applyCaptureDate(to: dstFile, source: srcFile,
+                                     captureDates: captureDates, override: dateOverride)
                     copied += 1
                     totalBytes += Int64(size)
                     totalBytesCopied += Int64(size)
@@ -347,6 +419,8 @@ enum Engine {
             totalBytes += Int64(size)
 
             if let dstHash = md5(of: dstFile), dstHash == srcHash {
+                applyCaptureDate(to: dstFile, source: srcFile,
+                                 captureDates: captureDates, override: dateOverride)
                 copied += 1
                 totalBytesCopied += Int64(size)
             } else {
@@ -360,6 +434,32 @@ enum Engine {
         return CopyResult(ok: failures.isEmpty, fileCount: copied,
                           totalBytes: totalBytes, failures: failures)
     }
+
+    private static func applyCaptureDate(to dst: URL, source src: URL,
+                                         captureDates: [String: Date]?, override: Date?) {
+        let fm = FileManager.default
+        let srcMod = (try? fm.attributesOfItem(atPath: src.path)[.modificationDate]) as? Date
+
+        let final: Date?
+        if let ov = override {
+            // Keep the source time-of-day, replace the Y/M/D with the corrected date.
+            let cal = Calendar.current
+            let ymd = cal.dateComponents([.year, .month, .day], from: ov)
+            let base = (srcMod.map(isPlausibleTimeOfDay) == true) ? srcMod! : ov
+            var t = cal.dateComponents([.hour, .minute, .second], from: base)
+            t.year = ymd.year; t.month = ymd.month; t.day = ymd.day
+            final = cal.date(from: t)
+        } else if let emb = captureDates?[src.path], isPlausibleDate(emb) {
+            final = emb
+        } else {
+            final = nil   // leave streamCopy's value alone
+        }
+        guard let d = final else { return }
+        try? fm.setAttributes([.modificationDate: d, .creationDate: d], ofItemAtPath: dst.path)
+    }
+
+    // A time-of-day is "plausible" if its whole date is; used only to decide whether to keep it.
+    private static func isPlausibleTimeOfDay(_ d: Date) -> Bool { isPlausibleDate(d) }
 
     // MARK: - Selective copy
 
@@ -437,13 +537,31 @@ enum Engine {
             proc.waitUntilExit()
 
             guard proc.terminationStatus == 0, let img = NSImage(contentsOf: tmp) else { continue }
+            let icon = squareIcon(from: img)
             let path = braw.path
             DispatchQueue.main.async {
-                NSWorkspace.shared.setIcon(img, forFile: path)
+                NSWorkspace.shared.setIcon(icon, forFile: path)
             }
             stamped += 1
         }
         Log.write("braw icons stamped -> \(folder.path) (\(stamped)/\(braws.count) clips)")
+    }
+
+    /// Finder icons live on a square canvas: handing setIcon a 16:9 frame makes
+    /// Finder squash it to fit. Letterbox the frame — centred, aspect preserved,
+    /// transparent bars — so it reads correctly at every icon size.
+    static func squareIcon(from img: NSImage, side: CGFloat = 512) -> NSImage {
+        let s = img.size
+        guard s.width > 0, s.height > 0 else { return img }
+        let canvas = NSImage(size: NSSize(width: side, height: side))
+        canvas.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        let scale = min(side / s.width, side / s.height)
+        let w = s.width * scale, h = s.height * scale
+        img.draw(in: NSRect(x: (side - w) / 2, y: (side - h) / 2, width: w, height: h),
+                 from: .zero, operation: .sourceOver, fraction: 1.0)
+        canvas.unlockFocus()
+        return canvas
     }
 
     /// Flattening rule: everything copies flat into the card folder EXCEPT

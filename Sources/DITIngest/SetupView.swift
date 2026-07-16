@@ -65,6 +65,10 @@ final class SetupModel: ObservableObject {
     @Published var resumeRun: IncompleteRun? = nil
     @Published var cardSummary: String = ""
 
+    @Published var clockSuspect: Bool = false
+    @Published var dateOverride: Date? = nil        // set only when the user corrects a bad clock
+    @Published var suspectObservedMax: Date? = nil
+
     // File browser. `dumpFullCard` on (the default) copies everything and the
     // per-file selection is ignored; switch it off to hand-pick clips.
     @Published var dumpFullCard: Bool = true
@@ -232,6 +236,7 @@ final class SetupModel: ObservableObject {
 
         let fullCard = dumpFullCard
         let chosen = selectedFiles
+        let overrideDate = dateOverride
 
         Task.detached {
             var byType = Engine.filesByType(in: source)
@@ -302,9 +307,12 @@ final class SetupModel: ObservableObject {
                 // Log dump started
                 Log.write("dump started -> card: \(cardName), dest: \(cardFolder.path), files: \(files.count)")
 
+                let capDates = Engine.readCaptureDates(for: files)
                 let startTime = Date()
                 let result = Engine.copyAndVerify(source: source, files: files,
-                                                  destFolder: cardFolder) { i, total, name, bytesCopied, grandTotal in
+                                                  destFolder: cardFolder,
+                                                  captureDates: capDates,
+                                                  dateOverride: overrideDate) { i, total, name, bytesCopied, grandTotal in
                     let elapsed = Date().timeIntervalSince(startTime)
                     let mbps = elapsed > 0.1 ? Double(bytesCopied) / 1_000_000.0 / elapsed : 0.0
                     let speedStr = String(format: "%.1f MB/s", mbps)
@@ -762,13 +770,22 @@ final class SetupModel: ObservableObject {
             }
             let sizeStr = Engine.humanSize(totalBytes)
             
-            // Modification-date range
+            // Capture-date or modification-date range
+            let caps = Engine.readCaptureDates(for: allMediaFiles)
             var dates: [Date] = []
             for file in allMediaFiles {
-                if let date = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate {
+                if let emb = caps[file.path] {
+                    if Engine.isPlausibleDate(emb) {
+                        dates.append(emb)
+                    }
+                } else if let date = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate {
                     dates.append(date)
                 }
             }
+
+            let maxD = caps.values.max()
+            let clkSuspect = maxD.map { !Engine.isPlausibleDate($0) } ?? false
+            let clkBestGuess = Date()
             
             var dateStr = ""
             if !dates.isEmpty {
@@ -823,6 +840,9 @@ final class SetupModel: ObservableObject {
 
             await MainActor.run {
                 self.cardSummary = summaryText
+                self.clockSuspect = clkSuspect
+                self.suspectObservedMax = maxD
+                if clkSuspect && self.dateOverride == nil { self.dateOverride = clkBestGuess }
             }
         }
     }
@@ -845,6 +865,14 @@ final class SetupModel: ObservableObject {
 struct SetupView: View {
     @ObservedObject var model: SetupModel
     var onClose: () -> Void
+
+    private var formattedSuspectObservedMax: String {
+        guard let maxD = model.suspectObservedMax else { return "" }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: maxD)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1146,6 +1174,22 @@ struct SetupView: View {
                 .onChange(of: model.dumpFullCard) { _, _ in
                     model.scheduleSelectivePreviewRefresh()
                 }
+
+            if model.clockSuspect {
+                HStack(alignment: .center, spacing: 6) {
+                    Text("⚠️ This card's clock looks wrong — it reads ") +
+                    Text(formattedSuspectObservedMax).bold() +
+                    Text(", which isn't a real shoot date. Files will be dated: ")
+                    
+                    DatePicker("", selection: Binding(
+                        get: { model.dateOverride ?? Date() },
+                        set: { model.dateOverride = $0 }),
+                        displayedComponents: .date)
+                    .labelsHidden()
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            }
             
             // Bottom Bar
             VStack(spacing: 12) {
