@@ -461,6 +461,23 @@ enum Engine {
     // A time-of-day is "plausible" if its whole date is; used only to decide whether to keep it.
     private static func isPlausibleTimeOfDay(_ d: Date) -> Bool { isPlausibleDate(d) }
 
+    // MARK: - Filesystem-safe names
+
+    /// Makes a Notion-sourced name safe for every filesystem we write to.
+    /// ExFAT/NTFS (the backup drives) reject ? < > | * : " / \ and names ending
+    /// in a space or dot — Finder-style copies fail with error -50 on them.
+    /// Control characters die too. Slashes become dashes rather than vanishing
+    /// so "Interview: Part 1/2" stays readable.
+    static func sanitizeName(_ raw: String) -> String {
+        var s = raw.replacingOccurrences(of: "/", with: "-")
+                   .replacingOccurrences(of: "\\", with: "-")
+                   .replacingOccurrences(of: ":", with: " -")
+        s.removeAll { "?<>|*\"".contains($0) || $0.asciiValue.map { $0 < 32 } == true }
+        while let last = s.last, last == " " || last == "." { s.removeLast() }
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? "Untitled" : trimmed
+    }
+
     // MARK: - Selective copy
 
     /// The files the user actually chooses between in the browser: real media

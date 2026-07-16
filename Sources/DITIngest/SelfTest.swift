@@ -255,6 +255,16 @@ enum SelfTest {
 
         print("All ResumeDetector edge cases verified successfully!")
 
+        // Filesystem-safe name sanitizer (ExFAT/NTFS reject ?<>|*:"/\ and
+        // trailing dots/spaces — they fail with Finder error -50).
+        assert(Engine.sanitizeName("Interview: Part 1/2") == "Interview - Part 1-2")
+        assert(Engine.sanitizeName("What? <Final> |v2| *STAR*") == "What Final v2 STAR")
+        assert(Engine.sanitizeName("Trailing dots...") == "Trailing dots")
+        assert(Engine.sanitizeName("Trailing space ") == "Trailing space")
+        assert(Engine.sanitizeName("???") == "Untitled")
+        assert(Engine.sanitizeName("Hope Church") == "Hope Church")   // clean names untouched
+        print("sanitizeName cases verified")
+
         try? fm.removeItem(at: root)
         print("\n=== SELF TEST DONE ===")
     }

@@ -264,14 +264,17 @@ final class SetupModel: ObservableObject {
 
             let dateStr = Self.dumpDateString()
             let yymm = String(dateStr.prefix(5))                     // "26.07"
+            // Notion names can carry characters ExFAT/NTFS backup drives reject.
+            let safeProject = Engine.sanitizeName(project)
+            let safeClient = clientName.isEmpty ? "" : Engine.sanitizeName(clientName)
             let projectFolderName = jobCode.isEmpty
-                ? "\(yymm)_\(project)"
-                : "\(yymm)_\(project)_\(jobCode)"
+                ? "\(yymm)_\(safeProject)"
+                : "\(yymm)_\(safeProject)_\(jobCode)"
 
             let dumpRoot = URL(fileURLWithPath: dump)
             let projectRoot: URL
-            if !clientName.isEmpty {
-                projectRoot = dumpRoot.appendingPathComponent(clientName).appendingPathComponent(projectFolderName)
+            if !safeClient.isEmpty {
+                projectRoot = dumpRoot.appendingPathComponent(safeClient).appendingPathComponent(projectFolderName)
             } else {
                 projectRoot = dumpRoot.appendingPathComponent(projectFolderName)  // fallback: no client folder
             }
@@ -355,9 +358,9 @@ final class SetupModel: ObservableObject {
 
                 Log.write("dump verified -> \(cardName), files: \(result.fileCount), bytes: \(result.totalBytes)")
 
-                let relPath = clientName.isEmpty
+                let relPath = safeClient.isEmpty
                     ? "\(projectFolderName)/\(mediaType.capitalized)/\(cardName)"
-                    : "\(clientName)/\(projectFolderName)/\(mediaType.capitalized)/\(cardName)"
+                    : "\(safeClient)/\(projectFolderName)/\(mediaType.capitalized)/\(cardName)"
                 let expectedBackupFolders = [b1, b2].filter { !$0.isEmpty }.map { dir -> URL in
                     URL(fileURLWithPath: dir).appendingPathComponent(relPath)
                 }
