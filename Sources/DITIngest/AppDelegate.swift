@@ -63,6 +63,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 action: #selector(openPendingBackupsMenu),
                                 keyEquivalent: ""))
         menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Settings…",
+                                action: #selector(openSettingsMenu),
+                                keyEquivalent: ","))
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit DIT Media Ingest",
                                 action: #selector(NSApplication.terminate(_:)),
                                 keyEquivalent: "q"))
@@ -156,6 +160,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func pendingBackupsWindowClosed() {
         self.pendingBackupsController = nil
+    }
+
+    private var settingsController: SettingsController?
+
+    @objc private func openSettingsMenu() {
+        if settingsController == nil {
+            settingsController = SettingsController(appDelegate: self)
+        }
+        settingsController?.show()
+    }
+
+    func settingsWindowClosed() {
+        self.settingsController = nil
     }
 
     func openResume(_ run: IncompleteRun) {
