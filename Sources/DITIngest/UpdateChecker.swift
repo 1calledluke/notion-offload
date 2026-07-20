@@ -36,9 +36,9 @@ enum UpdateChecker {
         return cfgToken.isEmpty ? nil : cfgToken
     }
 
-    private static func request(_ url: URL, token: String, accept: String) -> URLRequest {
+    private static func request(_ url: URL, token: String?, accept: String) -> URLRequest {
         var req = URLRequest(url: url)
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         req.setValue(accept, forHTTPHeaderField: "Accept")
         req.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         return req
@@ -63,13 +63,9 @@ enum UpdateChecker {
     /// and errors. The silent launch check only ever speaks when there IS one.
     static func check(interactive: Bool) {
         Task.detached {
-            guard let token = githubToken() else {
-                if interactive {
-                    await alert("No GitHub access",
-                                "Install the gh CLI and run `gh auth login`, or paste a read-only GitHub token in Settings.")
-                }
-                return
-            }
+            // Public repo: unauthenticated works; a token (gh keyring or
+            // config) just raises rate limits and covers private forks.
+            let token = githubToken()
             let api = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
             guard let (data, resp) = try? await URLSession.shared.data(
                     for: request(api, token: token, accept: "application/vnd.github+json")),
@@ -108,7 +104,7 @@ enum UpdateChecker {
         }
     }
 
-    private static func install(assetURL: URL, token: String, tag: String) async {
+    private static func install(assetURL: URL, token: String?, tag: String) async {
         Log.write("update: downloading \(tag)…")
         guard let (data, resp) = try? await URLSession.shared.data(
                 for: request(assetURL, token: token, accept: "application/octet-stream")),
