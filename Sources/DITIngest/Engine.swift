@@ -104,6 +104,7 @@ enum Engine {
         "Blackmagic Pocket Cinema Camera 6K": "Pocket 6K",
         "Blackmagic Pocket Cinema Camera 6K G2": "Pocket 6K",
         "Blackmagic Pocket Cinema Camera 6K Pro": "Pocket 6K",
+        "Blackmagic Cinema Camera 6K":       "BM6kFF",   // 2023 full-frame L-mount
         // Audio recorders — matched against BWF Originator, Model, Make, Product tags
         "Wireless PRO":                      "Rode Wireless PRO",
         "RodeWireless PRO":                  "Rode Wireless PRO",
@@ -226,41 +227,135 @@ enum Engine {
 
     /// Reads camera model with exiftool. Returns a friendly name, or nil if
     /// nothing usable was found (caller then asks the user).
-    static func detectDevice(in source: URL) -> String? {
-        let files = Array(mediaFiles(in: source).prefix(25))
-        if files.isEmpty { return nil }
+    /// Picks up to `n` files spread across the list (start/middle/end) instead
+    /// of the first n — cards can lead with files from a different session.
+    private static func spreadSample(_ files: [URL], _ n: Int) -> [URL] {
+        guard files.count > n else { return files }
+        let step = Double(files.count - 1) / Double(n - 1)
+        return (0..<n).map { files[Int((Double($0) * step).rounded())] }
+    }
 
-        guard let exiftool = exiftoolPath() else { return nil }
+    /// Resolves a raw metadata string to a friendly name: exact map hit, then
+    /// case-insensitive, then substring either direction (firmware variants
+    /// like "Blackmagic Pocket Cinema Camera 6K Pro G2" still map).
+    static func mapCameraName(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if let hit = cameraNameMap[trimmed] { return hit }
+        let lower = trimmed.lowercased()
+        for (key, name) in cameraNameMap {
+            let k = key.lowercased()
+            if k == lower || lower.contains(k) || k.contains(lower) { return name }
+        }
+        return nil
+    }
 
+    /// The bundled brawthumb tool (also used for icons/thumbnails) — its
+    /// --camera mode reads a clip's camera_type from the header via the
+    /// Blackmagic SDK in ~0.3s. exiftool needs -ee for braw, which scans the
+    /// entire multi-GB stream — minutes per clip.
+    static func brawToolPath() -> String? {
+        var candidates: [String] = []
+        if let bundled = Bundle.main.path(forResource: "brawthumb", ofType: nil) {
+            candidates.append(bundled)
+        }
+        candidates.append("/Applications/DIT Media Ingest.app/Contents/Resources/brawthumb")
+        candidates.append(NSHomeDirectory() + "/dit-ingest-app/tools/brawthumb")
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    private static func brawCameraType(_ url: URL) -> String? {
+        guard let tool = brawToolPath() else { return nil }
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: exiftool)
-        proc.arguments = ["-json", "-Model", "-CameraModelName",
-                          "-DeviceModelName", "-UniqueCameraModel",
-                          "-Originator", "-OriginatorReference",
-                          "-Make", "-Product"]
-            + files.map { $0.path }
+        proc.executableURL = URL(fileURLWithPath: tool)
+        proc.arguments = ["--camera", url.path]
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = Pipe()
-
         do { try proc.run() } catch { return nil }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
+        guard proc.terminationStatus == 0,
+              let s = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !s.isEmpty else { return nil }
+        return s
+    }
 
-        guard let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return nil
+    static func detectDevice(in source: URL) -> String? {
+        // Sample PRIMARY clips only — proxies and thumbnails carry no camera
+        // tags and used to eat every sample slot on Blackmagic cards.
+        let byType = filesByType(in: source)
+        var sample: [(url: URL, weight: Int)] = []
+        for (type, weight) in [("video", 3), ("audio", 2), ("stills", 1)] {
+            let files = (byType[type] ?? []).filter {
+                $0.pathExtension.lowercased() != "xml"
+                    && !$0.path.lowercased().contains("/proxy/")
+            }
+            for url in spreadSample(files, 6) { sample.append((url, weight)) }
         }
-        let keys = ["Model", "CameraModelName", "UniqueCameraModel", "DeviceModelName",
-                    "Originator", "Make", "Product"]
-        for entry in entries {
-            for key in keys {
-                if let raw = entry[key] as? String, !raw.isEmpty {
-                    let trimmed = raw.trimmingCharacters(in: .whitespaces)
-                    return cameraNameMap[trimmed] ?? sanitize(trimmed)
+        if sample.isEmpty {
+            sample = mediaFiles(in: source).prefix(10).map { ($0, 1) }
+        }
+        guard !sample.isEmpty else { return nil }
+
+        // Majority vote across the sampled files, weighted by media type, so a
+        // stray phone photo can't outvote the camera that shot the footage.
+        // Names our map recognizes count double vs. raw metadata strings.
+        var votes: [String: Int] = [:]
+        func vote(_ raw: String, weight: Int) {
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return }
+            if let mapped = mapCameraName(trimmed) {
+                votes[mapped, default: 0] += weight * 2
+            } else {
+                votes[sanitize(trimmed), default: 0] += weight
+            }
+        }
+
+        // BRAW: camera type via the SDK (header read, instant). Three clips
+        // is plenty — one card, one camera.
+        let brawSample = sample.filter { $0.url.pathExtension.lowercased() == "braw" }
+        for (url, weight) in brawSample.prefix(3) {
+            if let cam = brawCameraType(url) { vote(cam, weight: weight) }
+        }
+
+        // Everything else: one exiftool pass (no -ee — plain tags are enough
+        // for MP4/MOV/WAV/stills and it stays fast).
+        let rest = sample.filter { $0.url.pathExtension.lowercased() != "braw" }
+        if !rest.isEmpty, let exiftool = exiftoolPath() {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: exiftool)
+            proc.arguments = ["-json", "-Model", "-CameraModelName",
+                              "-DeviceModelName", "-UniqueCameraModel",
+                              "-Originator", "-OriginatorReference",
+                              "-Make", "-Product", "-SourceFile"]
+                + rest.map { $0.url.path }
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = Pipe()
+            if (try? proc.run()) != nil {
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                proc.waitUntilExit()
+                if let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                    let weightByPath = Dictionary(rest.map { ($0.url.path, $0.weight) },
+                                                  uniquingKeysWith: { a, _ in a })
+                    let keys = ["Model", "CameraModelName", "UniqueCameraModel",
+                                "DeviceModelName", "Originator", "Make", "Product"]
+                    for entry in entries {
+                        let path = entry["SourceFile"] as? String ?? ""
+                        let weight = weightByPath[path] ?? 1
+                        for key in keys {
+                            guard let raw = entry[key] as? String,
+                                  !raw.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+                            vote(raw, weight: weight)
+                            break   // one vote per file: highest-priority tag only
+                        }
+                    }
                 }
             }
         }
-        return nil
+        return votes.max(by: { $0.value < $1.value })?.key
     }
 
     private static func exiftoolPath() -> String? {

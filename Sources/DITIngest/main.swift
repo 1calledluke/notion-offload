@@ -9,6 +9,15 @@ if CommandLine.arguments.contains("--selftest") {
     exit(0)
 }
 
+// Headless detection check: `DITIngest --detect /path/to/card-or-folder`
+// prints what the camera detector would decide. Handy for tuning.
+if let i = CommandLine.arguments.firstIndex(of: "--detect"),
+   CommandLine.arguments.count > i + 1 {
+    let url = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+    print(Engine.detectDevice(in: url) ?? "(no detection)")
+    exit(0)
+}
+
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()

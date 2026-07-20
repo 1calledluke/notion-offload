@@ -109,17 +109,57 @@ public:
     virtual ULONG STDMETHODCALLTYPE Release(void) { return 0; }
 };
 
+// --camera mode: print the clip's camera_type metadata (header read, instant —
+// exiftool needs -ee which scans the whole multi-GB stream).
+static int PrintCameraType(IBlackmagicRawClip* clip)
+{
+    IBlackmagicRawMetadataIterator* it = nullptr;
+    if (clip->GetMetadataIterator(&it) != S_OK || it == nullptr)
+        return 3;
+
+    int found = 3;
+    CFStringRef key = nullptr;
+    while (it->GetKey(&key) == S_OK && key != nullptr)
+    {
+        char keyBuf[256] = {0};
+        CFStringGetCString(key, keyBuf, sizeof(keyBuf), kCFStringEncodingUTF8);
+        if (strcmp(keyBuf, "camera_type") == 0)
+        {
+            Variant v;
+            VariantInit(&v);
+            if (it->GetData(&v) == S_OK && v.vt == blackmagicRawVariantTypeString && v.bstrVal)
+            {
+                char valBuf[512] = {0};
+                CFStringGetCString(v.bstrVal, valBuf, sizeof(valBuf), kCFStringEncodingUTF8);
+                std::cout << valBuf << std::endl;
+                found = 0;
+            }
+            VariantClear(&v);
+            break;
+        }
+        if (it->Next() != S_OK) break;
+    }
+    it->Release();
+    return found;
+}
+
 int main(int argc, const char* argv[])
 {
+    bool cameraMode = argc >= 3 && strcmp(argv[1], "--camera") == 0;
     if (argc < 3)
     {
-        std::cerr << "Usage: " << argv[0] << " input.braw output.png [maxPixels=512]" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " input.braw output.png [maxPixels=512]\n"
+                  << "       " << argv[0] << " --camera input.braw" << std::endl;
         return 1;
     }
-    s_outputPath = argv[2];
-    if (argc >= 4) s_maxPixels = (size_t)atoi(argv[3]);
+    const char* inputPath = cameraMode ? argv[2] : argv[1];
+    if (!cameraMode)
+    {
+        s_outputPath = argv[2];
+        if (argc >= 4) s_maxPixels = (size_t)atoi(argv[3]);
+    }
 
-    CFStringRef clipName = CFStringCreateWithCString(NULL, argv[1], kCFStringEncodingUTF8);
+    CFStringRef clipName = CFStringCreateWithCString(NULL, inputPath, kCFStringEncodingUTF8);
 
     // The decoder framework ships with several Blackmagic installs — try each.
     const char* libraryPaths[] = {
@@ -152,6 +192,12 @@ int main(int argc, const char* argv[])
     {
         if (factory->CreateCodec(&codec) != S_OK) { std::cerr << "CreateCodec failed" << std::endl; result = E_FAIL; break; }
         if (codec->OpenClip(clipName, &clip) != S_OK) { std::cerr << "OpenClip failed" << std::endl; result = E_FAIL; break; }
+        if (cameraMode)
+        {
+            int rc = PrintCameraType(clip);
+            clip->Release(); codec->Release(); factory->Release(); CFRelease(clipName);
+            return rc;
+        }
         if (codec->SetCallback(&callback) != S_OK) { std::cerr << "SetCallback failed" << std::endl; result = E_FAIL; break; }
         if (clip->CreateJobReadFrame(0, &readJob) != S_OK) { std::cerr << "CreateJobReadFrame failed" << std::endl; result = E_FAIL; break; }
         if (readJob->Submit() != S_OK) { readJob->Release(); std::cerr << "Submit failed" << std::endl; result = E_FAIL; break; }
