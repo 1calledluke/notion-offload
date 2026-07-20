@@ -651,6 +651,30 @@ enum Engine {
         return byType.mapValues { $0.filter(belongs) }.filter { !$0.value.isEmpty }
     }
 
+    // MARK: - Auto-transcription hand-off
+
+    /// Fires Notion Transcribe on a freshly dumped card folder (video/audio
+    /// only) and returns immediately — transcription grinds the CPU while the
+    /// backups grind the drives. Best-effort: missing app just logs.
+    static func triggerTranscription(for folder: URL) {
+        let tool = "/Applications/Notion Transcribe.app/Contents/MacOS/NotionTranscribe"
+        guard FileManager.default.isExecutableFile(atPath: tool) else {
+            Log.write("auto-transcribe skipped -> Notion Transcribe.app not installed")
+            return
+        }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: tool)
+        proc.arguments = ["--transcribe", folder.path]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()   // deliberately NOT waited on
+            Log.write("auto-transcribe started -> \(folder.path)")
+        } catch {
+            Log.write("auto-transcribe launch FAILED -> \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - BRAW Finder icons
 
     /// Stamps each .braw file's first frame onto the file as its Finder icon,

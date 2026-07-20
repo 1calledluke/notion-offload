@@ -48,6 +48,7 @@ final class SetupModel: ObservableObject {
     @Published var backup1: String
     @Published var backup2: String
     @Published var justDump: Bool
+    @Published var autoTranscribe: Bool
 
     // Run state
     @Published var isLoadingProjects = false
@@ -124,6 +125,7 @@ final class SetupModel: ObservableObject {
         self.backup1 = cfg.backupLocation1
         self.backup2 = cfg.backupLocation2
         self.justDump = cfg.justDump
+        self.autoTranscribe = cfg.autoTranscribe
 
         refreshProjects()
         loadCardPreview()
@@ -140,6 +142,7 @@ final class SetupModel: ObservableObject {
         self.backup1 = cfg.backupLocation1
         self.backup2 = cfg.backupLocation2
         self.justDump = cfg.justDump
+        self.autoTranscribe = cfg.autoTranscribe
     }
 
     /// Re-query Notion for the current project list. Safe to call any time,
@@ -218,6 +221,7 @@ final class SetupModel: ObservableObject {
         config.backupLocation1 = backup1
         config.backupLocation2 = backup2
         config.justDump = justDump
+        config.autoTranscribe = autoTranscribe
         config.save()
 
         isRunning = true
@@ -231,6 +235,7 @@ final class SetupModel: ObservableObject {
         let dump = dumpLocation
         let b1 = backup1
         let b2 = backup2
+        let doTranscribe = autoTranscribe
         let projectID = selectedProjectID
         let token = config.notionToken
 
@@ -375,6 +380,11 @@ final class SetupModel: ObservableObject {
                     Log.write("backup planned -> \(dir) [src: \(cardFolder.path)]")
                 }
                 Engine.stampBrawIcons(in: cardFolder)
+                // Kick transcription off the moment the SSD copy is verified —
+                // whisper eats CPU while the backups eat drive I/O.
+                if doTranscribe && mediaType != "stills" {
+                    Engine.triggerTranscription(for: cardFolder)
+                }
                 doneNames.append(cardName)
 
                 cardFolders.append((url: cardFolder, cardName: cardName, relativePath: relPath, totalBytes: result.totalBytes))
@@ -1188,6 +1198,10 @@ struct SetupView: View {
                     )
                 }
             }
+
+            Toggle("Transcribe interviews after dump", isOn: $model.autoTranscribe)
+                .font(.callout)
+                .help("Runs Notion Transcribe on each video/audio card folder as soon as the dump verifies. Clips under a minute are skipped (b-roll).")
 
             Toggle("Dump full card", isOn: $model.dumpFullCard)
                 .font(.callout)

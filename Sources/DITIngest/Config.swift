@@ -7,6 +7,7 @@ struct Config: Codable {
     var backupLocation1: String = ""
     var backupLocation2: String = ""
     var justDump: Bool = false
+    var autoTranscribe: Bool = true
     var notionToken: String = ""
     var notionProjectsDB: String = "232714d3-333f-80c8-88fd-d1eefeed3b3f"
 
