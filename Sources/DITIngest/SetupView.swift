@@ -703,11 +703,28 @@ final class SetupModel: ObservableObject {
         await MainActor.run {
             let alert = NSAlert()
             alert.messageText = "What camera was this shot on?"
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-            alert.accessoryView = field
+            alert.informativeText = "Pick from the list or type your own."
+
+            // Editable combo box: dropdown of every device the app knows how to
+            // detect, still free-typeable for anything new. Last manual answer
+            // floats to the top since reshoots usually use the same rig.
+            let combo = NSComboBox(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
+            combo.completes = true
+            var known = Array(Set(Engine.cameraNameMap.values)).sorted()
+            let lastKey = "lastManualCamera"
+            if let last = UserDefaults.standard.string(forKey: lastKey), !last.isEmpty {
+                known.removeAll { $0 == last }
+                known.insert(last, at: 0)
+                combo.stringValue = last
+            }
+            combo.addItems(withObjectValues: known)
+            alert.accessoryView = combo
+            alert.window.initialFirstResponder = combo
+
             alert.addButton(withTitle: "OK")
             if alert.runModal() == .alertFirstButtonReturn {
-                let v = field.stringValue.trimmingCharacters(in: .whitespaces)
+                let v = combo.stringValue.trimmingCharacters(in: .whitespaces)
+                if !v.isEmpty { UserDefaults.standard.set(v, forKey: lastKey) }
                 return v.isEmpty ? nil : v
             }
             return nil
