@@ -7,6 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_NAME="DIT Media Ingest"
+VERSION="$(cat VERSION 2>/dev/null || echo 0.1)"
 BUNDLE_ID="com.indexvideo.ditingest"
 EXEC_NAME="DITIngest"
 DIST="dist"
@@ -41,7 +42,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
     <key>CFBundleExecutable</key><string>$EXEC_NAME</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>

@@ -8,6 +8,8 @@ struct Config: Codable {
     var backupLocation2: String = ""
     var justDump: Bool = false
     var autoTranscribe: Bool = true
+    /// Read-only GitHub token for update checks on machines without the gh CLI
+    var githubToken: String = ""
     var notionToken: String = ""
     var notionProjectsDB: String = "232714d3-333f-80c8-88fd-d1eefeed3b3f"
 

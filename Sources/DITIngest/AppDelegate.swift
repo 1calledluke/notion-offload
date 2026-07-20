@@ -40,6 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Register to launch at login (quietly; ignored if already registered).
         LoginItem.enable()
+
+        // Silent update check on launch (speaks only if a release is newer).
+        UpdateChecker.check(interactive: false)
     }
 
     // MARK: - Menu bar
@@ -66,6 +69,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Settings…",
                                 action: #selector(openSettingsMenu),
                                 keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Check for Updates…",
+                                action: #selector(checkForUpdatesMenu),
+                                keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit DIT Media Ingest",
                                 action: #selector(NSApplication.terminate(_:)),
@@ -169,6 +175,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsController = SettingsController(appDelegate: self)
         }
         settingsController?.show()
+    }
+
+    @objc private func checkForUpdatesMenu() {
+        UpdateChecker.check(interactive: true)
     }
 
     func settingsWindowClosed() {
