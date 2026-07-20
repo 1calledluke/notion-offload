@@ -121,6 +121,40 @@ enum Engine {
         "TASCAM DR-40":                      "Tascam DR-40",
         "TASCAM DR-60D":                     "Tascam DR-60D",
     ]
+    /// Cameras and recorders a production is likely to encounter — feeds the
+    /// manual camera dropdown when auto-detection misses. Names stay short
+    /// because they end up in card folder names.
+    static let probableCameras: [String] = [
+        // Sony
+        "Sony A7IV", "Sony A7SIII", "Sony A7RV", "Sony A1", "Sony A9III",
+        "Sony FX3", "Sony FX30", "Sony FX6", "Sony FX9", "Sony ZV-E1",
+        "Sony A6700", "Sony Burano", "Sony Venice 2",
+        // Canon
+        "Canon R5", "Canon R5C", "Canon R6II", "Canon R8",
+        "Canon C70", "Canon C80", "Canon C300III", "Canon C400", "Canon C500II",
+        // Blackmagic
+        "Pocket 4K", "Pocket 6K", "BM Cinema 6K", "BM 6K FF",
+        "URSA Mini G2", "URSA Cine 12K", "PYXIS 6K",
+        // RED / ARRI
+        "RED Komodo", "RED Komodo-X", "RED Raptor", "RED Raptor X",
+        "Alexa Mini LF", "Alexa 35",
+        // Panasonic / Fuji / Nikon
+        "Panasonic GH6", "Panasonic GH7", "Panasonic S5II", "Panasonic S1H",
+        "Fuji X-H2S", "Fuji X-T5", "Fuji GFX100 II",
+        "Nikon Z6III", "Nikon Z8", "Nikon Z9",
+        // Drones / action / mobile
+        "DJI Mavic 3", "DJI Mavic 4", "DJI Air 3", "DJI Mini 4 Pro",
+        "DJI Avata 2", "DJI Ronin 4D", "DJI Pocket 3", "DJI Action 5",
+        "GoPro Hero 12", "GoPro Hero 13", "Insta360 X4", "Insta360 X5",
+        "Insta360 Ace Pro", "iPhone",
+        // Audio recorders
+        "Rode Wireless PRO", "Rode Wireless GO II", "DJI Mic 2",
+        "Zoom H1n", "Zoom H4n", "Zoom H4n Pro", "Zoom H5", "Zoom H6", "Zoom H8",
+        "Zoom F3", "Zoom F6", "Zoom F8n",
+        "Tascam DR-40", "Tascam DR-40X", "Tascam DR-60D", "Tascam DR-100",
+        "Sound Devices MixPre-3", "Sound Devices MixPre-6",
+    ]
+
     /// Real capture date per file, read from embedded metadata via one exiftool pass.
     /// Keyed by absolute source path. Files with no embedded date are absent from the map.
     static func readCaptureDates(for files: [URL]) -> [String: Date] {

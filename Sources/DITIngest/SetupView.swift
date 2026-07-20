@@ -710,7 +710,7 @@ final class SetupModel: ObservableObject {
             // floats to the top since reshoots usually use the same rig.
             let combo = NSComboBox(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
             combo.completes = true
-            var known = Array(Set(Engine.cameraNameMap.values)).sorted()
+            var known = Array(Set(Engine.probableCameras).union(Engine.cameraNameMap.values)).sorted()
             let lastKey = "lastManualCamera"
             if let last = UserDefaults.standard.string(forKey: lastKey), !last.isEmpty {
                 known.removeAll { $0 == last }
