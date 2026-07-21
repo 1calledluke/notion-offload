@@ -187,8 +187,15 @@ enum Engine {
 
     /// exiftool emits "YYYY:MM:DD HH:MM:SS" (optionally with fractional secs / TZ). Parse leniently.
     static func parseExifDate(_ s: String) -> Date? {
-        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        var trimmed = s.trimmingCharacters(in: .whitespaces)
         if trimmed.isEmpty || trimmed.hasPrefix("0000") { return nil }
+        // Rode Wireless PRO firmware writes BWF years without the century:
+        // "0026:01:22" means 2026-01-22. Repair 00YY -> 20YY (the recorder's
+        // clock is right; only the year field is malformed).
+        if trimmed.count >= 4, trimmed.hasPrefix("00"),
+           let yy = Int(trimmed.prefix(4)), yy > 0, yy < 100 {
+            trimmed = "20" + trimmed.dropFirst(2)
+        }
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone.current

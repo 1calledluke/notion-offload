@@ -265,6 +265,13 @@ enum SelfTest {
         assert(Engine.sanitizeName("Hope Church") == "Hope Church")   // clean names untouched
         print("sanitizeName cases verified")
 
+        // Rode Wireless PRO writes years without the century (0026 = 2026).
+        let rode = Engine.parseExifDate("0026:01:22 10:54:00")
+        assert(rode != nil, "Rode 00YY year must parse")
+        assert(Calendar.current.component(.year, from: rode!) == 2026, "0026 must repair to 2026")
+        assert(Engine.parseExifDate("0000:00:00 00:00:00") == nil, "all-zero date stays nil")
+        print("Rode year-repair verified")
+
         try? fm.removeItem(at: root)
         print("\n=== SELF TEST DONE ===")
     }
