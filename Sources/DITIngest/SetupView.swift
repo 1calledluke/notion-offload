@@ -58,6 +58,8 @@ final class SetupModel: ObservableObject {
     @Published var speedText = ""
     @Published var etaText: String = ""
     @Published var finishedMessage: String?
+    /// Where everything landed, shown on the success screen (label, full path).
+    @Published var resultLocations: [(label: String, path: String)] = []
     @Published var errorMessage: String?
 
     // Concurrency and live status state
@@ -227,6 +229,7 @@ final class SetupModel: ObservableObject {
         isRunning = true
         errorMessage = nil
         speedText = ""
+        resultLocations = []
         activeBackups = [:]
         currentCardName = ""
         let clientName = selectedClientName
@@ -511,12 +514,20 @@ final class SetupModel: ObservableObject {
 
             Log.write("run complete")
 
+            let locations: [(String, String)] = cardFolders.map { ("Dump", $0.url.path) }
+                + cardFolders.flatMap { folder in
+                    backupDirs.enumerated().map { i, dir in
+                        ("Backup \(i + 1)",
+                         URL(fileURLWithPath: dir).appendingPathComponent(folder.relativePath).path)
+                    }
+                }
             await MainActor.run {
                 if backupDirs.isEmpty {
                     self.finishedMessage = "\(names) dumped and verified to SSD."
                 } else {
                     self.finishedMessage = "\(names) dumped and backed up to \(backupDirs.count) location(s)."
                 }
+                self.resultLocations = locations
                 self.appDelegate?.clearJob(self.jobID)
                 self.isRunning = false
                 self.etaText = ""
@@ -622,7 +633,10 @@ final class SetupModel: ObservableObject {
             // backups are still unfinished. The per-folder marker is enough.
             Log.write("backup complete -> dest: \(ssdFolder.path)")
 
+            let resumeLocations: [(String, String)] = [("Dump", ssdFolder.path)]
+                + allDestFolders.enumerated().map { i, d in ("Backup \(i + 1)", d.path) }
             await MainActor.run {
+                self.resultLocations = resumeLocations
                 self.finishedMessage = "\(cardName) backed up successfully."
                 self.appDelegate?.clearJob(self.jobID)
                 self.isRunning = false
@@ -1427,13 +1441,51 @@ struct SetupView: View {
                 .fontWeight(.semibold)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
-            
+
+            // Where everything actually landed — click a row to reveal in Finder.
+            if success && !model.resultLocations.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(model.resultLocations.enumerated()), id: \.offset) { _, loc in
+                        Button {
+                            NSWorkspace.shared.activateFileViewerSelecting(
+                                [URL(fileURLWithPath: loc.path)])
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: loc.label == "Dump"
+                                      ? "internaldrive" : "externaldrive")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 16)
+                                Text(loc.label)
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .frame(width: 62, alignment: .leading)
+                                Text(loc.path)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer(minLength: 0)
+                                Image(systemName: "arrow.right.circle")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reveal in Finder: \(loc.path)")
+                    }
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.5)))
+                .padding(.horizontal, 24)
+            }
+
             Spacer()
-            
+
             Button("Done", action: onClose)
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-            
+
             Spacer()
         }
         .frame(maxWidth: .infinity)
