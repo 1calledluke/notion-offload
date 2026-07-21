@@ -127,8 +127,30 @@ final class SetupModel: ObservableObject {
                 self.selectedFiles = Set(files)
                 self.isScanningCard = false
             }
+            // Recording dates: one exiftool pass (repaired BWF years included),
+            // file mtime as the fallback for formats without embedded dates.
+            let embedded = Engine.readCaptureDates(for: files)
+            var dates: [String: Date] = [:]
+            for f in files {
+                if let d = embedded[f.path], Engine.isPlausibleDate(d) {
+                    dates[f.path] = d
+                } else if let m = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate {
+                    dates[f.path] = m
+                }
+            }
+            let final = dates
+            await MainActor.run { self.fileDates = final }
         }
     }
+
+    @Published var fileDates: [String: Date] = [:]
+
+    static let clipDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMM d, yyyy  h:mm a"
+        return f
+    }()
 
     private var config: Config
     private var rawProjects: [Project] = []
@@ -1136,6 +1158,7 @@ struct SetupView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(model.browserFiles, id: \.self) { url in
                                 FileRow(url: url, source: model.sourceURL,
+                                        date: model.fileDates[url.path].map { SetupModel.clipDateFormatter.string(from: $0) },
                                         isSelected: model.dumpFullCard || model.selectedFiles.contains(url),
                                         isPickable: !model.dumpFullCard,
                                         onTap: { model.toggleFile(url); model.scheduleSelectivePreviewRefresh() })
@@ -1149,6 +1172,7 @@ struct SetupView: View {
                                 FileCell(
                                     url: url,
                                     source: model.sourceURL,
+                                    date: model.fileDates[url.path].map { SetupModel.clipDateFormatter.string(from: $0) },
                                     size: model.thumbSize,
                                     isSelected: model.dumpFullCard || model.selectedFiles.contains(url),
                                     // In full-card mode the ticks are informational only.
@@ -1563,6 +1587,7 @@ struct SetupView: View {
     struct FileCell: View {
         let url: URL
         let source: URL
+        let date: String?
         let size: Double
         let isSelected: Bool
         let isPickable: Bool
@@ -1618,6 +1643,13 @@ struct SetupView: View {
                     .truncationMode(.middle)
                     .foregroundStyle(.secondary)
                     .frame(width: size)
+                if let date {
+                    Text(date)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .frame(width: size)
+                }
             }
             .contentShape(Rectangle())
             .onTapGesture { if isPickable { onTap() } }
@@ -1632,6 +1664,7 @@ struct SetupView: View {
     struct FileRow: View {
         let url: URL
         let source: URL
+        let date: String?
         let isSelected: Bool
         let isPickable: Bool
         let onTap: () -> Void
@@ -1663,6 +1696,13 @@ struct SetupView: View {
                     .truncationMode(.middle)
 
                 Spacer()
+
+                if let date {
+                    Text(date)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
             }
             .padding(.vertical, 3)
             .padding(.horizontal, 4)
