@@ -13,6 +13,15 @@ struct Config: Codable {
     var notionToken: String = ""
     var notionProjectsDB: String = "232714d3-333f-80c8-88fd-d1eefeed3b3f"
 
+    // Transcription (merged in from Notion Transcribe)
+    var documentsDB: String = "240714d3-333f-80ae-b147-e1bc122f0c86"
+    var whisperModel: String = NSHomeDirectory() + "/Models/ggml-large-v3-turbo.bin"
+    var minClipSeconds: Double = 60      // b-roll gate
+    var lastFolder: String = ""
+
+    // Transcription code was written against `projectsDB`/`documentsDB`.
+    var projectsDB: String { notionProjectsDB }
+
     private static var fileURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask)[0]

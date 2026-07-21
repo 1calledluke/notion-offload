@@ -461,9 +461,11 @@ final class SetupModel: ObservableObject {
                 }
                 Engine.stampBrawIcons(in: cardFolder)
                 // Kick transcription off the moment the SSD copy is verified —
-                // whisper eats CPU while the backups eat drive I/O.
+                // whisper eats CPU while the backups eat drive I/O. In-process
+                // now (same app), visible in the Transcription Progress window.
                 if doTranscribe && mediaType != "stills" {
-                    Engine.triggerTranscription(for: cardFolder)
+                    let folder = cardFolder
+                    await MainActor.run { self.appDelegate?.enqueueTranscription(folder) }
                 }
                 doneNames.append(cardName)
 

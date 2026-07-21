@@ -66,6 +66,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 action: #selector(openPendingBackupsMenu),
                                 keyEquivalent: ""))
         menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Transcription Progress…",
+                                action: #selector(showTranscriptionProgress),
+                                keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Transcribe Folder…",
+                                action: #selector(transcribeFolderMenu),
+                                keyEquivalent: ""))
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Settings…",
                                 action: #selector(openSettingsMenu),
                                 keyEquivalent: ","))
@@ -183,6 +190,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func settingsWindowClosed() {
         self.settingsController = nil
+    }
+
+    // MARK: - Transcription (merged in — was a separate app)
+
+    private var progressController: ProgressController?
+    private var transcribeQueue: [URL] = []
+    private var isTranscribing = false
+
+    func progressWindowClosed() { progressController = nil }
+
+    /// Queue a folder for transcription; runs serially, visible in the progress
+    /// window. Called by the ingest flow after a dump verifies, and by the menu.
+    func enqueueTranscription(_ folder: URL) {
+        guard !transcribeQueue.contains(folder) else { return }
+        transcribeQueue.append(folder)
+        Log.write("queued for transcription: \(folder.path)")
+        startNextTranscriptionIfIdle()
+    }
+
+    private func startNextTranscriptionIfIdle() {
+        guard !isTranscribing, !transcribeQueue.isEmpty else { return }
+        let folder = transcribeQueue.removeFirst()
+        isTranscribing = true
+        if progressController == nil { progressController = ProgressController(appDelegate: self) }
+        progressController?.beginJob(folder: folder)
+        Task.detached {
+            let pipeline = TranscriptionPipeline()
+            await pipeline.run(folderURL: folder) { [weak self] status in
+                Task { @MainActor in self?.progressController?.update(line: status) }
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.progressController?.finishJob()
+                self.isTranscribing = false
+                self.startNextTranscriptionIfIdle()
+            }
+        }
+    }
+
+    @objc func showTranscriptionProgress() {
+        if progressController == nil { progressController = ProgressController(appDelegate: self) }
+        progressController?.show()
+    }
+
+    @objc func transcribeFolderMenu() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "Transcribe"
+        panel.message = "Select a folder of interview footage/audio to transcribe."
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            enqueueTranscription(url)
+            showTranscriptionProgress()
+        }
     }
 
     func openResume(_ run: IncompleteRun) {

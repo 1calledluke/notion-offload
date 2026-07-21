@@ -18,6 +18,20 @@ if let i = CommandLine.arguments.firstIndex(of: "--detect"),
     exit(0)
 }
 
+// Headless transcription: `DITIngest --transcribe /path/to/folder`.
+if let i = CommandLine.arguments.firstIndex(of: "--transcribe"),
+   CommandLine.arguments.count > i + 1 {
+    let url = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+    let sema = DispatchSemaphore(value: 0)
+    Task.detached {
+        await TranscriptionPipeline().run(folderURL: url) { print("status: \($0)"); fflush(stdout) }
+        sema.signal()
+    }
+    sema.wait()
+    Log.flush()   // async logger — flush before the process exits
+    exit(0)
+}
+
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()
