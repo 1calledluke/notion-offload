@@ -453,6 +453,7 @@ enum Engine {
                                healMismatched: Bool = false,
                                captureDates: [String: Date]? = nil,   // NEW: src path → embedded date
                                dateOverride: Date? = nil,             // NEW: user-corrected card date
+                               control: JobControl? = nil,
                                progress: ((Int, Int, String, Int64, Int64) -> Void)? = nil) -> CopyResult {
         let fm = FileManager.default
         try? fm.createDirectory(at: destFolder, withIntermediateDirectories: true)
@@ -472,6 +473,13 @@ enum Engine {
         var usedNames: Set<String> = []
 
         for (i, srcFile) in files.enumerated() {
+            if let control {
+                do { try control.checkpoint() } catch {
+                    failures.append("cancelled by user")
+                    Log.write("copy CANCELLED by user -> \(destFolder.path)")
+                    break
+                }
+            }
             var rel = flattenedRelPath(of: srcFile, under: source)
             if usedNames.contains(rel) {
                 let dir = (rel as NSString).deletingLastPathComponent
@@ -534,7 +542,7 @@ enum Engine {
             // care about the data — and hashing the source while copying saves a
             // full read pass on multi-GB clips.
             let baseBytes = totalBytesCopied
-            let copyResult = streamCopy(from: srcFile, to: dstFile, onProgress: { written in
+            let copyResult = streamCopy(from: srcFile, to: dstFile, control: control, onProgress: { written in
                 progress?(i + 1, files.count, rel, baseBytes + written, grandTotal)
             })
             guard let srcHash = copyResult.md5 else {
@@ -755,6 +763,7 @@ enum Engine {
     /// and camera metadata lives inside the media files anyway. The original
     /// creation/modification dates are preserved on the copy.
     static func streamCopy(from src: URL, to dst: URL,
+                           control: JobControl? = nil,
                            onProgress: ((Int64) -> Void)? = nil) -> (md5: String?, failReason: String?) {
         let fm = FileManager.default
         // Write to a temporary sibling and rename into place only on success.
@@ -794,6 +803,12 @@ enum Engine {
         var finished = false
 
         while !finished && failReason == nil {
+            if let control {
+                do { try control.checkpoint() } catch {
+                    failReason = "cancelled by user"
+                    break
+                }
+            }
             autoreleasepool {
                 var chunk: Data
                 do {
@@ -889,10 +904,11 @@ enum Engine {
     // MARK: - Backup + Manifest
 
     static func backUpAndVerify(ssdCardFolder: URL, to backupCardFolder: URL,
+                                control: JobControl? = nil,
                                 progress: ((Int, Int, String, Int64, Int64) -> Void)? = nil) -> CopyResult {
         let files = mediaFiles(in: ssdCardFolder)
         return copyAndVerify(source: ssdCardFolder, files: files, destFolder: backupCardFolder,
-                             healMismatched: true, progress: progress)
+                             healMismatched: true, control: control, progress: progress)
     }
 
     static func finderItemCount(of folder: URL) -> Int {

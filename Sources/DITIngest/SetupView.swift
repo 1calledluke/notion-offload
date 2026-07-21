@@ -60,6 +60,22 @@ final class SetupModel: ObservableObject {
     @Published var finishedMessage: String?
     /// Where everything landed, shown on the success screen (label, full path).
     @Published var resultLocations: [(label: String, path: String)] = []
+    @Published var isJobPaused = false
+    let jobControl = JobControl()
+
+    func pauseJob()  { jobControl.pause();  isJobPaused = true;  Log.write("job paused by user") }
+    func resumeJob() { jobControl.resume(); isJobPaused = false; Log.write("job resumed by user") }
+    func stopJob() {
+        let alert = NSAlert()
+        alert.messageText = "Stop this job?"
+        alert.informativeText = "The current file is discarded safely; everything already verified stays. Unfinished backups will appear in Pending Backups for retry."
+        alert.addButton(withTitle: "Stop Job")
+        alert.addButton(withTitle: "Keep Going")
+        if alert.runModal() == .alertFirstButtonReturn {
+            jobControl.cancel()
+            isJobPaused = false
+        }
+    }
     @Published var errorMessage: String?
 
     // Concurrency and live status state
@@ -323,7 +339,8 @@ final class SetupModel: ObservableObject {
                 let result = Engine.copyAndVerify(source: source, files: files,
                                                   destFolder: cardFolder,
                                                   captureDates: capDates,
-                                                  dateOverride: overrideDate) { i, total, name, bytesCopied, grandTotal in
+                                                  dateOverride: overrideDate,
+                                                  control: self.jobControl) { i, total, name, bytesCopied, grandTotal in
                     let elapsed = Date().timeIntervalSince(startTime)
                     let mbps = elapsed > 0.1 ? Double(bytesCopied) / 1_000_000.0 / elapsed : 0.0
                     let speedStr = String(format: "%.1f MB/s", mbps)
@@ -352,11 +369,15 @@ final class SetupModel: ObservableObject {
                 }
 
                 if !result.ok {
-                    Log.write("dump FAILED -> \(cardName), failures: \(result.failures.count)")
+                    let wasStopped = result.failures.contains { $0.contains("cancelled by user") }
+                    Log.write(wasStopped ? "dump STOPPED by user -> \(cardName)"
+                                         : "dump FAILED -> \(cardName), failures: \(result.failures.count)")
                     await MainActor.run {
-                        self.errorMessage = "\(cardName): \(result.failures.count) file(s) failed to copy or verify. " +
-                            "If this happened instantly, the card may have disconnected — reseat it and try again. " +
-                            "Nothing was finalized."
+                        self.errorMessage = wasStopped
+                            ? "Job stopped. Files already verified are safe on the SSD; the card was NOT ejected — run ingest again to finish (verified files are skipped)."
+                            : "\(cardName): \(result.failures.count) file(s) failed to copy or verify. " +
+                              "If this happened instantly, the card may have disconnected — reseat it and try again. " +
+                              "Nothing was finalized."
                         self.appDelegate?.clearJob(self.jobID)
                         self.isRunning = false
                         self.etaText = ""
@@ -668,7 +689,8 @@ final class SetupModel: ObservableObject {
             Log.write("backup started -> \(backupDir) [src: \(ssdFolder.path)]")
 
             let startTime = Date()
-            let result = Engine.backUpAndVerify(ssdCardFolder: ssdFolder, to: destFolder) { i, total, name, bytesCopied, grandTotal in
+            let result = Engine.backUpAndVerify(ssdCardFolder: ssdFolder, to: destFolder,
+                                                control: self.jobControl) { i, total, name, bytesCopied, grandTotal in
                 let elapsed = Date().timeIntervalSince(startTime)
                 let mbps = elapsed > 0.1 ? Double(bytesCopied) / 1_000_000.0 / elapsed : 0.0
                 let speedStr = String(format: "%.1f MB/s", mbps)
@@ -1298,6 +1320,32 @@ struct SetupView: View {
                 dumpPhaseView
             } else {
                 backupPhaseView
+            }
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button {
+                    model.isJobPaused ? model.resumeJob() : model.pauseJob()
+                } label: {
+                    Label(model.isJobPaused ? "Resume" : "Pause",
+                          systemImage: model.isJobPaused ? "play.fill" : "pause.fill")
+                }
+                .buttonStyle(.bordered)
+                Button(role: .destructive) {
+                    model.stopJob()
+                } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .buttonStyle(.bordered)
+                Spacer()
+            }
+            .padding(.top, 12)
+
+            if model.isJobPaused {
+                Text("Paused — nothing is being written")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.top, 6)
             }
         }
     }
