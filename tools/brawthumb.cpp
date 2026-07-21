@@ -109,6 +109,70 @@ public:
     virtual ULONG STDMETHODCALLTYPE Release(void) { return 0; }
 };
 
+// --audio mode: extract the clip's audio track to a PCM WAV (SDK reads it
+// directly from the braw container — no proxy needed for transcription).
+static int ExtractAudioToWav(IBlackmagicRawClip* clip, const char* outPath)
+{
+    IBlackmagicRawClipAudio* audio = nullptr;
+    if (clip->QueryInterface(IID_IBlackmagicRawClipAudio, (void**)&audio) != S_OK || !audio)
+    {
+        std::cerr << "no audio track" << std::endl;
+        return 4;
+    }
+
+    uint64_t audioSamples = 0; uint32_t bitDepth = 0, channelCount = 0, sampleRate = 0;
+    if (audio->GetAudioSampleCount(&audioSamples) != S_OK ||
+        audio->GetAudioBitDepth(&bitDepth) != S_OK ||
+        audio->GetAudioChannelCount(&channelCount) != S_OK ||
+        audio->GetAudioSampleRate(&sampleRate) != S_OK ||
+        audioSamples == 0 || channelCount == 0)
+    {
+        audio->Release();
+        std::cerr << "no audio samples" << std::endl;
+        return 4;
+    }
+
+    struct __attribute__((packed)) WavHeader {
+        char riff[4] = {'R','I','F','F'}; uint32_t contentSize = 0;
+        char wave[4] = {'W','A','V','E'}; char fmt[4] = {'f','m','t',' '};
+        uint32_t fmtSize = 16; uint16_t format = 1;
+        uint16_t channels = 0; uint32_t rate = 0; uint32_t byteRate = 0;
+        uint16_t align = 0; uint16_t bits = 0;
+        char data[4] = {'d','a','t','a'}; uint32_t dataBytes = 0;
+    } hdr;
+    hdr.channels = (uint16_t)channelCount;
+    hdr.rate = sampleRate;
+    hdr.bits = (uint16_t)bitDepth;
+    hdr.byteRate = sampleRate * bitDepth * channelCount / 8;
+    hdr.align = (uint16_t)((bitDepth * channelCount) / 8);
+    uint64_t dataBytes = (audioSamples * channelCount * bitDepth) / 8;
+    hdr.dataBytes = (uint32_t)dataBytes;
+    hdr.contentSize = 36 + (uint32_t)dataBytes;
+
+    FILE* out = fopen(outPath, "wb");
+    if (!out) { audio->Release(); return 4; }
+    fwrite(&hdr, sizeof(hdr), 1, out);
+
+    constexpr uint32_t maxSamples = 48000;
+    uint32_t bufSize = (maxSamples * channelCount * bitDepth) / 8;
+    int8_t* buf = new int8_t[bufSize];
+    uint64_t index = 0;
+    HRESULT r = S_OK;
+    while (r == S_OK && index < audioSamples)
+    {
+        uint32_t samplesRead = 0, bytesRead = 0;
+        r = audio->GetAudioSamples(index, buf, bufSize, maxSamples, &samplesRead, &bytesRead);
+        if (r == S_OK && bytesRead > 0) fwrite(buf, bytesRead, 1, out);
+        if (samplesRead == 0) break;
+        index += samplesRead;
+    }
+    delete[] buf;
+    fclose(out);
+    audio->Release();
+    std::cout << outPath << std::endl;
+    return 0;
+}
+
 // --camera mode: print the clip's camera_type metadata (header read, instant —
 // exiftool needs -ee which scans the whole multi-GB stream).
 static int PrintCameraType(IBlackmagicRawClip* clip)
@@ -146,14 +210,17 @@ static int PrintCameraType(IBlackmagicRawClip* clip)
 int main(int argc, const char* argv[])
 {
     bool cameraMode = argc >= 3 && strcmp(argv[1], "--camera") == 0;
+    bool audioMode  = argc >= 4 && strcmp(argv[1], "--audio") == 0;
     if (argc < 3)
     {
         std::cerr << "Usage: " << argv[0] << " input.braw output.png [maxPixels=512]\n"
-                  << "       " << argv[0] << " --camera input.braw" << std::endl;
+                  << "       " << argv[0] << " --camera input.braw\n"
+                  << "       " << argv[0] << " --audio input.braw output.wav" << std::endl;
         return 1;
     }
-    const char* inputPath = cameraMode ? argv[2] : argv[1];
-    if (!cameraMode)
+    const char* inputPath = (cameraMode || audioMode) ? argv[2] : argv[1];
+    const char* audioOut = audioMode ? argv[3] : nullptr;
+    if (!cameraMode && !audioMode)
     {
         s_outputPath = argv[2];
         if (argc >= 4) s_maxPixels = (size_t)atoi(argv[3]);
@@ -195,6 +262,12 @@ int main(int argc, const char* argv[])
         if (cameraMode)
         {
             int rc = PrintCameraType(clip);
+            clip->Release(); codec->Release(); factory->Release(); CFRelease(clipName);
+            return rc;
+        }
+        if (audioMode)
+        {
+            int rc = ExtractAudioToWav(clip, audioOut);
             clip->Release(); codec->Release(); factory->Release(); CFRelease(clipName);
             return rc;
         }
