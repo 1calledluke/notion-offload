@@ -668,25 +668,32 @@ enum Engine {
 
     // MARK: - Auto-transcription hand-off
 
-    /// Fires Notion Transcribe on a freshly dumped card folder (video/audio
-    /// only) and returns immediately — transcription grinds the CPU while the
-    /// backups grind the drives. Best-effort: missing app just logs.
+    /// Hands a freshly dumped card folder to the VISIBLE Notion Transcribe
+    /// menu-bar app by dropping a job file in its watched queue — so you can
+    /// see and watch the transcription, not a headless invisible process.
+    /// Launches the app if it isn't already running.
     static func triggerTranscription(for folder: URL) {
-        let tool = "/Applications/Notion Transcribe.app/Contents/MacOS/NotionTranscribe"
-        guard FileManager.default.isExecutableFile(atPath: tool) else {
-            Log.write("auto-transcribe skipped -> Notion Transcribe.app not installed")
+        let fm = FileManager.default
+        let queueDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("NotionTranscribe/queue")
+        try? fm.createDirectory(at: queueDir, withIntermediateDirectories: true)
+        let jobFile = queueDir.appendingPathComponent("\(UUID().uuidString).txt")
+        do {
+            try folder.path.write(to: jobFile, atomically: true, encoding: .utf8)
+            Log.write("auto-transcribe queued -> \(folder.path)")
+        } catch {
+            Log.write("auto-transcribe queue FAILED -> \(error.localizedDescription)")
             return
         }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: tool)
-        proc.arguments = ["--transcribe", folder.path]
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()   // deliberately NOT waited on
-            Log.write("auto-transcribe started -> \(folder.path)")
-        } catch {
-            Log.write("auto-transcribe launch FAILED -> \(error.localizedDescription)")
+        // Make sure the menu-bar app is running to pick it up.
+        let appPath = "/Applications/Notion Transcribe.app"
+        if fm.fileExists(atPath: appPath) {
+            let open = Process()
+            open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            open.arguments = ["-g", appPath]   // -g: don't steal focus
+            try? open.run()
+        } else {
+            Log.write("auto-transcribe: Notion Transcribe.app not installed (job queued for later)")
         }
     }
 
