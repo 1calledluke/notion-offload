@@ -145,6 +145,31 @@ final class SetupModel: ObservableObject {
 
     @Published var fileDates: [String: Date] = [:]
 
+    enum BrowserSort: String, CaseIterable {
+        case name = "Name"
+        case dateAsc = "Date ↑"
+        case dateDesc = "Date ↓"
+    }
+    @Published var browserSort: BrowserSort = BrowserSort(
+        rawValue: UserDefaults.standard.string(forKey: "browserSort") ?? "") ?? .name {
+        didSet { UserDefaults.standard.set(browserSort.rawValue, forKey: "browserSort") }
+    }
+
+    /// Browser files in the chosen order. Missing dates sort to the end.
+    var displayFiles: [URL] {
+        switch browserSort {
+        case .name: return browserFiles
+        case .dateAsc:
+            return browserFiles.sorted {
+                (fileDates[$0.path] ?? .distantFuture) < (fileDates[$1.path] ?? .distantFuture)
+            }
+        case .dateDesc:
+            return browserFiles.sorted {
+                (fileDates[$0.path] ?? .distantPast) > (fileDates[$1.path] ?? .distantPast)
+            }
+        }
+    }
+
     static let clipDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -1124,6 +1149,14 @@ struct SetupView: View {
                     Divider().frame(height: 14)
                 }
 
+                Picker("", selection: $model.browserSort) {
+                    ForEach(SetupModel.BrowserSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 86)
+                .labelsHidden()
+                .help("Sort files")
+
                 // Thumbnail size (grid only), then grid/list toggle.
                 if !model.browserListView {
                     Image(systemName: "photo").font(.caption2).foregroundStyle(.secondary)
@@ -1156,7 +1189,7 @@ struct SetupView: View {
                 ScrollView {
                     if model.browserListView {
                         LazyVStack(spacing: 0) {
-                            ForEach(model.browserFiles, id: \.self) { url in
+                            ForEach(model.displayFiles, id: \.self) { url in
                                 FileRow(url: url, source: model.sourceURL,
                                         date: model.fileDates[url.path].map { SetupModel.clipDateFormatter.string(from: $0) },
                                         isSelected: model.dumpFullCard || model.selectedFiles.contains(url),
@@ -1168,7 +1201,7 @@ struct SetupView: View {
                     } else {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: model.thumbSize + 12), spacing: 10)],
                                   spacing: 10) {
-                            ForEach(model.browserFiles, id: \.self) { url in
+                            ForEach(model.displayFiles, id: \.self) { url in
                                 FileCell(
                                     url: url,
                                     source: model.sourceURL,
