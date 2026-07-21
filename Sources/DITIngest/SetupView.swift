@@ -49,6 +49,9 @@ final class SetupModel: ObservableObject {
     @Published var backup2: String
     @Published var justDump: Bool
     @Published var autoTranscribe: Bool
+    /// Optional shoot/session subfolder inside the project (a month-long
+    /// project gets one per shoot day: interviews, b-roll day 2, etc.)
+    @Published var shootName: String = ""
 
     // Run state
     @Published var isLoadingProjects = false
@@ -302,6 +305,8 @@ final class SetupModel: ObservableObject {
         let b1 = backup1
         let b2 = backup2
         let doTranscribe = autoTranscribe
+        let shoot = Engine.sanitizeName(shootName).trimmingCharacters(in: .whitespaces)
+        let hasShoot = !shootName.trimmingCharacters(in: .whitespaces).isEmpty
         let projectID = selectedProjectID
         let token = config.notionToken
 
@@ -343,12 +348,15 @@ final class SetupModel: ObservableObject {
                 : "\(yymm)_\(safeProject)_\(jobCode)"
 
             let dumpRoot = URL(fileURLWithPath: dump)
-            let projectRoot: URL
+            var projectRoot: URL
             if !safeClient.isEmpty {
                 projectRoot = dumpRoot.appendingPathComponent(safeClient).appendingPathComponent(projectFolderName)
             } else {
                 projectRoot = dumpRoot.appendingPathComponent(projectFolderName)  // fallback: no client folder
             }
+            // Optional shoot-day/session level: each session keeps its own
+            // Video/Stills/Audio tree inside the project.
+            if hasShoot { projectRoot = projectRoot.appendingPathComponent(shoot) }
 
             var doneNames: [String] = []
             var cardFolders: [(url: URL, cardName: String, relativePath: String, totalBytes: Int64)] = []
@@ -434,9 +442,10 @@ final class SetupModel: ObservableObject {
 
                 Log.write("dump verified -> \(cardName), files: \(result.fileCount), bytes: \(result.totalBytes)")
 
+                let sessionPart = hasShoot ? "/\(shoot)" : ""
                 let relPath = safeClient.isEmpty
-                    ? "\(projectFolderName)/\(mediaType.capitalized)/\(cardName)"
-                    : "\(safeClient)/\(projectFolderName)/\(mediaType.capitalized)/\(cardName)"
+                    ? "\(projectFolderName)\(sessionPart)/\(mediaType.capitalized)/\(cardName)"
+                    : "\(safeClient)/\(projectFolderName)\(sessionPart)/\(mediaType.capitalized)/\(cardName)"
                 let expectedBackupFolders = [b1, b2].filter { !$0.isEmpty }.map { dir -> URL in
                     URL(fileURLWithPath: dir).appendingPathComponent(relPath)
                 }
@@ -1267,6 +1276,21 @@ struct SetupView: View {
                 .border(.separator)
             }
             
+            // Section: Shoot / session subfolder
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text("SHOOT / SESSION")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("(optional)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                TextField("e.g. Interviews Day 1, B-Roll Downtown…", text: $model.shootName)
+                    .textFieldStyle(.roundedBorder)
+                    .help("Adds a subfolder inside the project for this shoot day: Project/<Session>/Video/…  Leave blank to file directly under the project.")
+            }
+
             // Section: Destinations
             VStack(alignment: .leading, spacing: 8) {
                 Text("DESTINATIONS")
