@@ -460,10 +460,27 @@ final class SetupModel: ObservableObject {
                     Log.write("backup planned -> \(dir) [src: \(cardFolder.path)]")
                 }
                 Engine.stampBrawIcons(in: cardFolder)
+
+                // Log this dump to the Media DB (reporting spine): where it
+                // landed, what it is, and whether it'll be transcribed. No-op if
+                // no Media Log DB is configured. Runs on this detached task.
+                let willTranscribe = doTranscribe && mediaType != "stills"
+                let b1Dest = b1.isEmpty ? "" : URL(fileURLWithPath: b1).appendingPathComponent(relPath).path
+                let b2Dest = b2.isEmpty ? "" : URL(fileURLWithPath: b2).appendingPathComponent(relPath).path
+                MediaLog.upsertDump(card: cardName, projectPageId: projectID, camera: cam,
+                                    type: mediaType.capitalized, dates: dateStr,
+                                    files: result.fileCount, size: Engine.humanSize(result.totalBytes),
+                                    dumpLocation: cardFolder.path, backup1: b1Dest, backup2: b2Dest,
+                                    config: Config.load())
+                if willTranscribe {
+                    MediaLog.setTranscription(card: cardName, status: "Pending",
+                                              transcriptURL: nil, config: Config.load())
+                }
+
                 // Kick transcription off the moment the SSD copy is verified —
                 // whisper eats CPU while the backups eat drive I/O. In-process
                 // now (same app), visible in the Transcription Progress window.
-                if doTranscribe && mediaType != "stills" {
+                if willTranscribe {
                     let folder = cardFolder
                     await MainActor.run { self.appDelegate?.enqueueTranscription(folder) }
                 }

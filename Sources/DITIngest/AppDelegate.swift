@@ -215,11 +215,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isTranscribing = true
         if progressController == nil { progressController = ProgressController(appDelegate: self) }
         progressController?.beginJob(folder: folder)
+        let card = folder.lastPathComponent   // card-folder name == Media Log row
         Task.detached {
             let pipeline = TranscriptionPipeline()
             await pipeline.run(folderURL: folder) { [weak self] status in
                 Task { @MainActor in self?.progressController?.update(line: status) }
             }
+            // Mark the card's Media Log row transcribed.
+            MediaLog.setTranscription(card: card, status: "Done", transcriptURL: nil,
+                                      config: Config.load())
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.progressController?.finishJob()

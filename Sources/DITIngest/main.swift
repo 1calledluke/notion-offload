@@ -32,6 +32,25 @@ if let i = CommandLine.arguments.firstIndex(of: "--transcribe"),
     exit(0)
 }
 
+// Headless Media Log check: `DITIngest --mediadb-test`
+if CommandLine.arguments.contains("--mediadb-test") {
+    let cfg = Config.load()
+    if let db = MediaLog.ensureDatabase(config: cfg) {
+        print("Media Log DB: \(db)")
+        let row = MediaLog.upsertDump(card: "TEST_CARD_zz", projectPageId: nil,
+                                      camera: "Test Cam", type: "Video",
+                                      dates: "Jul 21", files: 3, size: "148 GB",
+                                      dumpLocation: "/Volumes/SSD/test",
+                                      backup1: "/Volumes/Backup1/test", backup2: "",
+                                      config: cfg)
+        print("row: \(row ?? "(failed)")")
+    } else {
+        print("No Media Log DB — set mediaParentPage in config (share a Notion page with the integration).")
+    }
+    Log.flush()
+    exit(0)
+}
+
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()

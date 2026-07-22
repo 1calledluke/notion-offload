@@ -19,6 +19,10 @@ struct Config: Codable {
     var minClipSeconds: Double = 60      // b-roll gate
     var lastFolder: String = ""
 
+    // Media Log reporting database
+    var mediaDB: String = ""             // filled after the DB is created/found
+    var mediaParentPage: String = ""     // page the user shared; DB is created inside it
+
     // Transcription code was written against `projectsDB`/`documentsDB`.
     var projectsDB: String { notionProjectsDB }
 
@@ -44,6 +48,8 @@ struct Config: Codable {
         whisperModel     = try c.decodeIfPresent(String.self, forKey: .whisperModel) ?? d.whisperModel
         minClipSeconds   = try c.decodeIfPresent(Double.self, forKey: .minClipSeconds) ?? d.minClipSeconds
         lastFolder       = try c.decodeIfPresent(String.self, forKey: .lastFolder) ?? d.lastFolder
+        mediaDB          = try c.decodeIfPresent(String.self, forKey: .mediaDB) ?? d.mediaDB
+        mediaParentPage  = try c.decodeIfPresent(String.self, forKey: .mediaParentPage) ?? d.mediaParentPage
     }
 
     private static var fileURL: URL {
