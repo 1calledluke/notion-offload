@@ -2,14 +2,12 @@ import Foundation
 
 enum WhisperTranscriber {
 
-    /// Preferred engine: whisperx (word-level forced alignment -> tight
-    /// timecodes that survive the trip back into Resolve). Falls back to
-    /// whisper-cli when the venv isn't present or errors.
+    /// Engine: whisper.cpp (whisper-cli) with Metal GPU — ~30x realtime on
+    /// Apple Silicon (a 98s clip in ~3s). whisperx-on-CPU was ~1x realtime,
+    /// unusable for interview days, so it's gone. whisper.cpp gives
+    /// segment-level timestamps, which is plenty for scripting.
     static func transcribe(wavURL: URL, modelPath: String, outputBaseURL: URL) -> String? {
-        if let srt = transcribeWithWhisperX(wavURL: wavURL) {
-            return srt
-        }
-        return transcribeWithCLI(wavURL: wavURL, modelPath: modelPath, outputBaseURL: outputBaseURL)
+        transcribeWithCLI(wavURL: wavURL, modelPath: modelPath, outputBaseURL: outputBaseURL)
     }
 
     private static let whisperxPython = NSHomeDirectory() + "/venvs/whisperx/bin/python"

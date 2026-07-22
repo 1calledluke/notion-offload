@@ -47,11 +47,6 @@ final class TranscriptionPipeline {
             Log.write("No project name pattern matched in folder path hierarchy.")
         }
         
-        // One whisperx process for the whole job — models load once, clips
-        // stream through. nil -> per-clip fallback engines.
-        let worker = WhisperWorker()
-        let workerReady = worker.start()
-        defer { worker.stop() }
 
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("NotionTranscribe_\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -133,8 +128,7 @@ final class TranscriptionPipeline {
             }
             
             let tempBase = tempDir.appendingPathComponent(UUID().uuidString)
-            let srtText = (workerReady ? worker.transcribe(wavURL: wavURL) : nil)
-                ?? WhisperTranscriber.transcribe(wavURL: wavURL, modelPath: config.whisperModel, outputBaseURL: tempBase)
+            let srtText = WhisperTranscriber.transcribe(wavURL: wavURL, modelPath: config.whisperModel, outputBaseURL: tempBase)
             try? FileManager.default.removeItem(at: wavURL)
             
             guard let srtText = srtText, !srtText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
