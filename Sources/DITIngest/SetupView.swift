@@ -111,12 +111,31 @@ final class SetupModel: ObservableObject {
         dumpFullCard ? Set(browserFiles) : selectedFiles
     }
 
+    /// The last plainly-clicked file, anchor for shift-click range selection.
+    private var selectionAnchor: URL?
+
     func toggleFile(_ url: URL) {
         if selectedFiles.contains(url) { selectedFiles.remove(url) }
         else { selectedFiles.insert(url) }
     }
+
+    /// A click in the browser. Shift held → select the whole range from the
+    /// last-clicked file to this one (adds to the selection), so you don't have
+    /// to tick every clip on a big card. Plain click → toggle just this one.
+    func selectClicked(_ url: URL, extend: Bool) {
+        if extend, let anchor = selectionAnchor,
+           let a = displayFiles.firstIndex(of: anchor),
+           let b = displayFiles.firstIndex(of: url) {
+            selectedFiles.formUnion(displayFiles[min(a, b)...max(a, b)])
+            selectionAnchor = url   // allow continued range extension
+        } else {
+            toggleFile(url)
+            selectionAnchor = url
+        }
+    }
+
     func selectAllFiles() { selectedFiles = Set(browserFiles) }
-    func selectNoFiles() { selectedFiles = [] }
+    func selectNoFiles() { selectedFiles = []; selectionAnchor = nil }
 
     /// Loads the browser's file list. Everything starts ticked, so switching
     /// "Dump full card" off leaves the same set selected until you change it.
@@ -1171,6 +1190,9 @@ struct SetupView: View {
                     Text("\(model.selectedFiles.count) of \(model.browserFiles.count) selected")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Text("⇧-click for range")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                     Button("All") { model.selectAllFiles(); model.scheduleSelectivePreviewRefresh() }
                         .buttonStyle(.link)
                         .font(.caption)
@@ -1225,7 +1247,10 @@ struct SetupView: View {
                                         date: model.fileDates[url.path].map { SetupModel.clipDateFormatter.string(from: $0) },
                                         isSelected: model.dumpFullCard || model.selectedFiles.contains(url),
                                         isPickable: !model.dumpFullCard,
-                                        onTap: { model.toggleFile(url); model.scheduleSelectivePreviewRefresh() })
+                                        onTap: {
+                                            model.selectClicked(url, extend: NSEvent.modifierFlags.contains(.shift))
+                                            model.scheduleSelectivePreviewRefresh()
+                                        })
                             }
                         }
                         .padding(6)
@@ -1242,7 +1267,7 @@ struct SetupView: View {
                                     // In full-card mode the ticks are informational only.
                                     isPickable: !model.dumpFullCard,
                                     onTap: {
-                                        model.toggleFile(url)
+                                        model.selectClicked(url, extend: NSEvent.modifierFlags.contains(.shift))
                                         model.scheduleSelectivePreviewRefresh()
                                     }
                                 )
