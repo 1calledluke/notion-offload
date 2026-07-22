@@ -31,6 +31,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         requestNotificationPermission()
 
+        // Debug: `--show-setup <folder>` opens the ingest window directly for
+        // UI/clipping inspection (regular activation so the window is visible).
+        if let i = CommandLine.arguments.firstIndex(of: "--show-setup"),
+           CommandLine.arguments.count > i + 1 {
+            NSApp.setActivationPolicy(.regular)
+            let url = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            openSetup(for: url)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
         // Start watching for newly mounted volumes (cards, readers, SSDs).
         diskWatcher = DiskWatcher { [weak self] volumeURL in
             self?.handleInsertedVolume(volumeURL)

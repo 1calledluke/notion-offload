@@ -1035,8 +1035,11 @@ struct SetupView: View {
             .animation(.easeInOut(duration: 0.2), value: model.isRunning)
             .animation(.easeInOut(duration: 0.2), value: model.finishedMessage != nil)
         }
-        .frame(minWidth: 540, idealWidth: 680, maxWidth: .infinity,
-               minHeight: 600, idealHeight: 860, maxHeight: .infinity)
+        // minHeight is set so the window can never be shorter than the full
+        // form (browser at its minimum + all fixed sections + pinned bottom
+        // bar), which guarantees the "Begin Ingest" button never clips.
+        .frame(minWidth: 560, idealWidth: 700, maxWidth: .infinity,
+               minHeight: 820, idealHeight: 900, maxHeight: .infinity)
     }
 
     private var resumeReadyView: some View {
@@ -1248,7 +1251,7 @@ struct SetupView: View {
                         .padding(8)
                     }
                 }
-                .frame(minHeight: 200, maxHeight: .infinity)
+                .frame(minHeight: 160, maxHeight: .infinity)
                 .background(.background)
                 .border(.separator)
             }
