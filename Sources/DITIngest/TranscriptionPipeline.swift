@@ -22,6 +22,16 @@ final class TranscriptionPipeline {
         let scanResult = MediaFinder.findMedia(in: folderURL)
         let items = scanResult.items
         let totalClips = items.count
+
+        // Clip names that repeat across cards (Blackmagic "Untitled CAM"
+        // defaults number from 01 on every card). These ALWAYS get their card
+        // folder appended to the title — a deterministic rule that doesn't
+        // depend on doc state or processing order, so re-runs stay idempotent.
+        let duplicatedNames: Set<String> = {
+            var counts: [String: Int] = [:]
+            for it in items { counts[(it.clipName as NSString).deletingPathExtension, default: 0] += 1 }
+            return Set(counts.filter { $0.value > 1 }.keys)
+        }()
         
         if totalClips == 0 {
             Log.write("No transcribable media files found in \(folderURL.path)")
@@ -111,7 +121,13 @@ final class TranscriptionPipeline {
                 skippedCount += 1
                 continue
             }
-            let clipTitle = (item.clipName as NSString).deletingPathExtension
+            let base = (item.clipName as NSString).deletingPathExtension
+            // Deterministic title: append the card only for names that collide
+            // across cards, so both interviews land in the doc AND re-runs
+            // produce the identical title (idempotent).
+            let clipTitle: String = duplicatedNames.contains(base)
+                ? "\(base) — \(item.originalURL.deletingLastPathComponent().lastPathComponent)"
+                : base
             if doc.existingClips.contains(clipTitle) {
                 Log.write("Skipping \(item.clipName): already in the transcript doc")
                 skippedCount += 1
